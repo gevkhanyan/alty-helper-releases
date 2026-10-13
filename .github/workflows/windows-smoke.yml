@@ -123,7 +123,7 @@ jobs:
           Write-Host "pcinfo.ps1: $sections sections, $($failed.Count) with an error"
           $failed | ForEach-Object { Write-Host $_.Line }
           Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "### pcinfo.ps1 on ${env:SMOKE_IMAGE}: $sections sections, $($failed.Count) with an error"
-          if ($sections -ne 12) { throw "pcinfo.ps1 wrote $sections sections, not 12" }
+          if ($sections -ne 13) { throw "pcinfo.ps1 wrote $sections sections, not 13" }
 
       # collected by smoke.ps1 before its uninstall check removes the helper's data folder
       - name: Keep the evidence

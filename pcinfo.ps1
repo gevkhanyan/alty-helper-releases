@@ -1,4 +1,4 @@
-# The computer's facts for Alty, read-only: Windows, security, user, clock, network, proxy, the local
+# The computer's facts for Alty, read-only: Windows, antivirus, Defender, user, clock, network, proxy, the local
 # connections (the register's, if the till program keeps one open), printers, devices, screens,
 # programs and the Alty helper. It changes nothing and sends nothing: it writes one text file on the
 # Desktop and opens it in Notepad. At a business it is pasted into a normal Windows PowerShell window
@@ -7,7 +7,8 @@ $o = Join-Path ([Environment]::GetFolderPath('Desktop')) ("alty-pc-info-{0:yyyyM
 function S($t, [scriptblock]$b) { "`r`n== $t"; try { & $b 2>&1 | Format-List | Out-String -Width 300 } catch { "ERROR: $_" } }
 & {
  S 'windows' { Get-ComputerInfo -Property WindowsProductName,WindowsEditionId,WindowsVersion,OsBuildNumber,OsArchitecture,OsLanguage,CsManufacturer,CsModel,CsProcessors,CsTotalPhysicalMemory,TimeZone }
- S 'security' { Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct | Select displayName,productState; Get-MpComputerStatus | Select AMRunningMode,RealTimeProtectionEnabled,SmartAppControlState }
+ S 'antivirus' { Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct | Select displayName,productState }
+ S 'defender' { Get-MpComputerStatus | Select AMRunningMode,RealTimeProtectionEnabled,SmartAppControlState }
  S 'user' { whoami; (whoami /groups) -match 'S-1-5-32-544'; Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' | Select AutoAdminLogon; Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' | Select HiberbootEnabled }
  S 'clock' { Get-Date -Format o; tzutil /g }
  S 'network' { Get-NetIPAddress -AddressFamily IPv4 | Select InterfaceAlias,IPAddress,PrefixLength,PrefixOrigin; Get-NetIPConfiguration | Select InterfaceAlias,IPv4DefaultGateway,DNSServer }
