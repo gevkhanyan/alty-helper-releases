@@ -113,6 +113,14 @@ jobs:
         if: always()
         shell: powershell
         run: |
+          # as at a business, with the helper installed and running, so its status and log sections are read
+          # (smoke.ps1 has uninstalled it): the same installer, silently, and its page waited for
+          if ($env:SMOKE_INSTALLER) {
+            Start-Process -FilePath $env:SMOKE_INSTALLER -ArgumentList '/S' -Wait
+            $deadline = (Get-Date).AddSeconds(30)
+            do { Start-Sleep -Milliseconds 500; $up = $true; try { Invoke-RestMethod -Uri 'http://127.0.0.1:47100/api/status' -TimeoutSec 2 | Out-Null } catch { $up = $false } } until ($up -or (Get-Date) -gt $deadline)
+            Write-Host "the helper's page answers again: $up"
+          }
           # the very line a person pastes (README), with this commit's file instead of main's, which a cache
           # may still serve old for a few minutes after a push
           [Net.ServicePointManager]::SecurityProtocol = 'Tls12'; irm "https://raw.githubusercontent.com/$env:GITHUB_REPOSITORY/$env:GITHUB_SHA/pcinfo.ps1" | iex
@@ -127,6 +135,17 @@ jobs:
           $failed | ForEach-Object { Write-Host $_.Line }
           Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "### pcinfo.ps1 on ${env:SMOKE_IMAGE}: $sections sections, $($failed.Count) with an error"
           if ($sections -ne 15) { throw "pcinfo.ps1 wrote $sections sections, not 15" }
+          # with the helper running, its two sections must hold its answers, not an error
+          $text = Get-Content -LiteralPath $file.FullName -Raw
+          foreach ($name in 'helper status', 'helper log') {
+            $at = $text.IndexOf("== $name")
+            $next = $text.IndexOf("`r`n== ", $at + 3)
+            $body = if ($next -gt $at) { $text.Substring($at, $next - $at) } else { $text.Substring($at) }
+            if ($body -match '(?m)^ERROR:') { throw "the '$name' section failed with the helper running: $body" }
+            Write-Host "'$name' answered ($($body.Length) characters)"
+          }
+          $uninstaller = Join-Path $env:LOCALAPPDATA 'Programs\Alty Helper\uninstall.exe'
+          if (Test-Path -LiteralPath $uninstaller) { Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait }
 
       # collected by smoke.ps1 before its uninstall check removes the helper's data folder
       - name: Keep the evidence
