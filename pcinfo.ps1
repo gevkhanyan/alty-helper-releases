@@ -20,7 +20,8 @@ function S($t, [scriptblock]$b) { "`r`n== $t"; try { & $b 2>&1 | Format-List | O
  S 'screens' { Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::AllScreens | Select DeviceName,Primary,Bounds }
  S 'programs' { Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -EA 0 | ? DisplayName | Select DisplayName,DisplayVersion,Publisher | Sort DisplayName }
  S 'alty helper' { $e = "$env:LOCALAPPDATA\Programs\Alty Helper\alty-helper.exe"; Get-Process alty-helper -EA 0 | Select Id,StartTime,Path; Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -EA 0 | Select AltyHelper; if (Test-Path $e) { Get-AuthenticodeSignature $e | Select Status; Get-FileHash $e } }
- S 'helper status' { Invoke-RestMethod -Uri 'http://127.0.0.1:47100/api/status' -TimeoutSec 5 | ConvertTo-Json -Depth 6 }
+ # read as UTF-8 bytes: Windows PowerShell 5.1 decodes an answer without a charset as Latin-1, garbling Armenian names
+ S 'helper status' { $r = Invoke-WebRequest -Uri 'http://127.0.0.1:47100/api/status' -UseBasicParsing -TimeoutSec 5; [Text.Encoding]::UTF8.GetString($r.RawContentStream.ToArray()) | ConvertFrom-Json | ConvertTo-Json -Depth 6 }
  S 'helper log' { Get-Content -LiteralPath "$env:LOCALAPPDATA\Alty Helper\logs\helper.log" -Tail 300 -ErrorAction Stop }
 } | Out-File -Encoding utf8 -Width 300 $o
 if (-not $env:CI) { notepad $o }
