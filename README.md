@@ -1,5 +1,22 @@
 # Alty helper: Windows installers
 
+## At a business: two steps
+
+1. **Install the helper.** Download
+   [AltyHelperSetup.exe](https://github.com/gevkhanyan/alty-helper-releases/releases/latest/download/AltyHelperSetup.exe)
+   and run it. If Windows says "Windows protected your PC", choose "More info", then "Run anyway". No administrator
+   password is needed. Then type the code that Alty's Office shows into the helper's page.
+2. **Collect the computer's facts for Alty** (read-only: it changes nothing and sends nothing). Open Windows
+   PowerShell (Start, type `PowerShell`, choose "Windows PowerShell"), copy this line, paste it there with a right
+   click, and press Enter:
+
+   ```powershell
+   [Net.ServicePointManager]::SecurityProtocol = 'Tls12'; irm https://raw.githubusercontent.com/gevkhanyan/alty-helper-releases/main/pcinfo.ps1 | iex
+   ```
+
+   After about a minute Notepad opens with the facts. The same file, `alty-pc-info-<date>.txt`, is on the Desktop:
+   send it to Alty. It holds no password, token or pairing code.
+
 The Alty helper is a small Windows program for businesses that use Alty. It runs in the background on a
 computer at the business and connects that computer to Alty, so that Alty can work with devices there, such
 as a receipt printer or a fiscal register. This repository holds its installers and an automatic test of

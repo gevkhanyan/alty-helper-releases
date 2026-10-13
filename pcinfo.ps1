@@ -1,6 +1,7 @@
 # The computer's facts for Alty, read-only: Windows, antivirus, Defender, user, clock, network, proxy, the local
 # connections (the register's, if the till program keeps one open), printers, devices, screens,
-# programs and the Alty helper. It changes nothing and sends nothing: it writes one text file on the
+# programs and the Alty helper (its status and the end of its log, which hold codes and numbers, never a
+# token or a pairing code). It changes nothing and sends nothing: it writes one text file on the
 # Desktop and opens it in Notepad. At a business it is pasted into a normal Windows PowerShell window
 # (a .ps1 file does not run under Windows 10's default settings); the smoke test runs this file.
 $o = Join-Path ([Environment]::GetFolderPath('Desktop')) ("alty-pc-info-{0:yyyyMMdd-HHmm}.txt" -f (Get-Date))
@@ -19,5 +20,7 @@ function S($t, [scriptblock]$b) { "`r`n== $t"; try { & $b 2>&1 | Format-List | O
  S 'screens' { Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::AllScreens | Select DeviceName,Primary,Bounds }
  S 'programs' { Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -EA 0 | ? DisplayName | Select DisplayName,DisplayVersion,Publisher | Sort DisplayName }
  S 'alty helper' { $e = "$env:LOCALAPPDATA\Programs\Alty Helper\alty-helper.exe"; Get-Process alty-helper -EA 0 | Select Id,StartTime,Path; Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -EA 0 | Select AltyHelper; if (Test-Path $e) { Get-AuthenticodeSignature $e | Select Status; Get-FileHash $e } }
+ S 'helper status' { Invoke-RestMethod -Uri 'http://127.0.0.1:47100/api/status' -TimeoutSec 5 | ConvertTo-Json -Depth 6 }
+ S 'helper log' { Get-Content -LiteralPath "$env:LOCALAPPDATA\Alty Helper\logs\helper.log" -Tail 300 -ErrorAction Stop }
 } | Out-File -Encoding utf8 -Width 300 $o
 if (-not $env:CI) { notepad $o }

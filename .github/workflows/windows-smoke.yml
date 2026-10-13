@@ -107,12 +107,15 @@ jobs:
         run: ./smoke.ps1 -Installer $env:SMOKE_INSTALLER -ExpectedVersion $env:SMOKE_VERSION -Evidence (Join-Path $env:RUNNER_TEMP 'evidence')
 
       # the read-only facts script a person pastes at a business, run here in Windows PowerShell 5.1 as
-      # there: it must write its file with every section answered, an "ERROR:" line marking one that failed
+      # there, the way the README gives it: it must write its file with every section, an "ERROR:" line
+      # marking one that failed
       - name: The computer's facts script (pcinfo.ps1)
         if: always()
         shell: powershell
         run: |
-          ./pcinfo.ps1
+          # the very line a person pastes (README), with this commit's file instead of main's, which a cache
+          # may still serve old for a few minutes after a push
+          [Net.ServicePointManager]::SecurityProtocol = 'Tls12'; irm "https://raw.githubusercontent.com/$env:GITHUB_REPOSITORY/$env:GITHUB_SHA/pcinfo.ps1" | iex
           $file = Get-ChildItem -Path ([Environment]::GetFolderPath('Desktop')) -Filter 'alty-pc-info-*.txt' | Sort-Object LastWriteTime | Select-Object -Last 1
           if (-not $file) { throw 'pcinfo.ps1 wrote no file on the Desktop' }
           $evidence = Join-Path $env:RUNNER_TEMP 'evidence'
@@ -123,7 +126,7 @@ jobs:
           Write-Host "pcinfo.ps1: $sections sections, $($failed.Count) with an error"
           $failed | ForEach-Object { Write-Host $_.Line }
           Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "### pcinfo.ps1 on ${env:SMOKE_IMAGE}: $sections sections, $($failed.Count) with an error"
-          if ($sections -ne 13) { throw "pcinfo.ps1 wrote $sections sections, not 13" }
+          if ($sections -ne 15) { throw "pcinfo.ps1 wrote $sections sections, not 15" }
 
       # collected by smoke.ps1 before its uninstall check removes the helper's data folder
       - name: Keep the evidence
