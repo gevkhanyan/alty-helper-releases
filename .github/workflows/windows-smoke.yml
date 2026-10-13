@@ -116,7 +116,9 @@ jobs:
           # as at a business, with the helper installed and running, so its status and log sections are read
           # (smoke.ps1 has uninstalled it): the same installer, silently, and its page waited for
           if ($env:SMOKE_INSTALLER) {
-            Start-Process -FilePath $env:SMOKE_INSTALLER -ArgumentList '/S' -Wait
+            # the installer alone is waited for: Start-Process -Wait would also wait for the helper it starts
+            $setup = Start-Process -FilePath $env:SMOKE_INSTALLER -ArgumentList '/S' -PassThru
+            $setup.WaitForExit(); $setup.Dispose()
             $deadline = (Get-Date).AddSeconds(30)
             do { Start-Sleep -Milliseconds 500; $up = $true; try { Invoke-RestMethod -Uri 'http://127.0.0.1:47100/api/status' -TimeoutSec 2 | Out-Null } catch { $up = $false } } until ($up -or (Get-Date) -gt $deadline)
             Write-Host "the helper's page answers again: $up"
@@ -145,7 +147,7 @@ jobs:
             Write-Host "'$name' answered ($($body.Length) characters)"
           }
           $uninstaller = Join-Path $env:LOCALAPPDATA 'Programs\Alty Helper\uninstall.exe'
-          if (Test-Path -LiteralPath $uninstaller) { Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait }
+          if (Test-Path -LiteralPath $uninstaller) { $un = Start-Process -FilePath $uninstaller -ArgumentList '/S' -PassThru; $un.WaitForExit(); $un.Dispose() }
 
       # collected by smoke.ps1 before its uninstall check removes the helper's data folder
       - name: Keep the evidence
