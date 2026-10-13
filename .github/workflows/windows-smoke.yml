@@ -1,0 +1,136 @@
+# Installs the Alty helper's released installer on clean Windows computers that GitHub lends for the run
+# and then discards, and checks it as a computer at a business would meet it (smoke.ps1 says each check).
+# Nothing is built and no secret is used: the installer is downloaded from this repository's public
+# release links, without a token, as anyone downloads it. The pairing check sends Alty's server a
+# deliberately wrong code, which the server refuses: nothing is paired and nothing changes there.
+name: Windows smoke test
+run-name: Windows smoke test of ${{ github.event.release.tag_name || inputs.tag }}
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The release to test: its tag (for example v0.1.0), or "latest"'
+        required: true
+        default: latest
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  smoke:
+    name: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 20
+    env:
+      SMOKE_IMAGE: ${{ matrix.image }}
+    steps:
+      - name: Get the test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Which release
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # read-only: which tag, and the release's own list of files (with GitHub's digest of each)
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+          $api = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases"
+          $latest = ''
+          try { $latest = (Invoke-RestMethod -Uri "$api/latest" -Headers $headers -MaximumRetryCount 3 -RetryIntervalSec 5).tag_name } catch { }
+          $tag = if ($env:RELEASE_TAG) { $env:RELEASE_TAG } elseif ($env:INPUT_TAG -and $env:INPUT_TAG.Trim() -ne 'latest') { $env:INPUT_TAG.Trim() } else { $latest }
+          if ($tag -cnotmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { throw "not a release tag: '$tag'" }
+          $release = Invoke-RestMethod -Uri "$api/tags/$tag" -Headers $headers -MaximumRetryCount 3 -RetryIntervalSec 5
+          if ($release.draft) { throw "$tag is still a draft" }
+          ConvertTo-Json -InputObject $release -Depth 8 | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'release.json') -Encoding utf8
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "SMOKE_TAG=$tag"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "SMOKE_VERSION=$($tag.Substring(1))"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "SMOKE_IS_LATEST=$(if ($tag -eq $latest) { 'true' } else { 'false' })"
+          Write-Host "testing $tag on $env:SMOKE_IMAGE (the latest release is $latest)"
+
+      - name: Download the installer (public links, no token)
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $release = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'release.json') -Raw | ConvertFrom-Json
+          $dir = Join-Path $env:RUNNER_TEMP 'release'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $base = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:SMOKE_TAG"
+          $installer = 'AltyHelperSetup.exe'
+          $versioned = "AltyHelperSetup-$env:SMOKE_VERSION.exe"
+          # the stable name and the checksums are required; the copy under the version's name when the release has it
+          $installers = @($installer) + @($release.assets | Where-Object { $_.name -eq $versioned } | ForEach-Object { $_.name })
+          foreach ($name in $installers + 'SHA256SUMS.txt') {
+            Invoke-WebRequest -Uri "$base/$name" -OutFile (Join-Path $dir $name) -MaximumRetryCount 3 -RetryIntervalSec 5
+          }
+          # SHA256SUMS.txt lists "<sha-256>  <file>" per line, as sha256sum writes it
+          $sums = @{}
+          foreach ($line in Get-Content -LiteralPath (Join-Path $dir 'SHA256SUMS.txt')) {
+            if ($line -match '^([0-9a-fA-F]{64}) [ *](.+)$') { $sums[$Matches[2].Trim()] = $Matches[1].ToLowerInvariant() }
+          }
+          $rows = @()
+          foreach ($name in $installers) {
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $dir $name)).Hash.ToLowerInvariant()
+            if (-not $sums.ContainsKey($name)) { throw "SHA256SUMS.txt does not list $name" }
+            if ($sums[$name] -ne $actual) { throw "$name has SHA-256 $actual, but SHA256SUMS.txt says $($sums[$name])" }
+            # GitHub's own digest of the uploaded file, where the API gives one
+            $digest = @($release.assets | Where-Object { $_.name -eq $name } | ForEach-Object { $_.digest })[0]
+            if ($digest -and $digest -ne "sha256:$actual") { throw "$name has SHA-256 $actual, but GitHub's digest of the upload is $digest" }
+            $rows += "| $name | ``$actual`` | matches SHA256SUMS.txt$(if ($digest) { ' and GitHub''s digest' }) |"
+          }
+          if ($env:SMOKE_IS_LATEST -eq 'true') {
+            # the stable link people are given serves this very file
+            $linked = Join-Path $env:RUNNER_TEMP 'stable-link.exe'
+            Invoke-WebRequest -Uri "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/$installer" -OutFile $linked -MaximumRetryCount 3 -RetryIntervalSec 5
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $linked).Hash.ToLowerInvariant()
+            if ($actual -ne $sums[$installer]) { throw "the stable link serves $actual, not this release's $installer" }
+            $rows += "| releases/latest/download/$installer | ``$actual`` | the stable link serves this release's file |"
+          }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "SMOKE_INSTALLER=$(Join-Path $dir $installer)"
+          $summary = @("### $env:SMOKE_TAG on ${env:SMOKE_IMAGE}: the download", '', '| File | SHA-256 | Check |', '|---|---|---|') + $rows + ''
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $summary
+
+      - name: Smoke test
+        run: ./smoke.ps1 -Installer $env:SMOKE_INSTALLER -ExpectedVersion $env:SMOKE_VERSION -Evidence (Join-Path $env:RUNNER_TEMP 'evidence')
+
+      # the read-only facts script a person pastes at a business, run here in Windows PowerShell 5.1 as
+      # there: it must write its file with every section answered, an "ERROR:" line marking one that failed
+      - name: The computer's facts script (pcinfo.ps1)
+        if: always()
+        shell: powershell
+        run: |
+          ./pcinfo.ps1
+          $file = Get-ChildItem -Path ([Environment]::GetFolderPath('Desktop')) -Filter 'alty-pc-info-*.txt' | Sort-Object LastWriteTime | Select-Object -Last 1
+          if (-not $file) { throw 'pcinfo.ps1 wrote no file on the Desktop' }
+          $evidence = Join-Path $env:RUNNER_TEMP 'evidence'
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          Copy-Item -LiteralPath $file.FullName -Destination $evidence
+          $sections = @(Select-String -LiteralPath $file.FullName -Pattern '^== ').Count
+          $failed = @(Select-String -LiteralPath $file.FullName -Pattern '^ERROR:')
+          Write-Host "pcinfo.ps1: $sections sections, $($failed.Count) with an error"
+          $failed | ForEach-Object { Write-Host $_.Line }
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "### pcinfo.ps1 on ${env:SMOKE_IMAGE}: $sections sections, $($failed.Count) with an error"
+          if ($sections -ne 12) { throw "pcinfo.ps1 wrote $sections sections, not 12" }
+
+      # collected by smoke.ps1 before its uninstall check removes the helper's data folder
+      - name: Keep the evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: helper-smoke-${{ env.SMOKE_TAG || 'unknown' }}-${{ matrix.image }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: warn
+          retention-days: 30
