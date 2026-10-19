@@ -834,9 +834,10 @@ function Add-RawPrinter {
   return $RawDriver
 }
 
-# Takes check 4's printer, its port and its file off this computer again. What stays (Windows' spooler may hold a
-# port for a while after its printer goes) is the test's own leftover on a computer that is thrown away, and is
-# only noted.
+# Takes check 4's printer, its port and its file off this computer again. What stays is the test's own leftover on
+# a computer that is thrown away, and is only noted: Windows' spooler may hold a port a moment after its printer
+# goes, and Windows Server 2025's Remove-PrinterPort refuses a name with a backslash, which a file port's has (it is
+# then given the port itself).
 function Remove-RawPrinter([switch]$Quiet) {
   $left = [System.Collections.Generic.List[string]]::new()
   try {
@@ -846,12 +847,16 @@ function Remove-RawPrinter([switch]$Quiet) {
   }
   $script:PortRefusal = ''
   $portGone = Wait-Until {
-    if ($null -ne (Get-PrinterPort -Name $RawPort -ErrorAction SilentlyContinue)) {
-      try { Remove-PrinterPort -Name $RawPort } catch { $script:PortRefusal = $_.Exception.Message }
+    $port = Get-PrinterPort -Name $RawPort -ErrorAction SilentlyContinue
+    if ($null -ne $port) {
+      try { Remove-PrinterPort -Name $RawPort } catch {
+        $script:PortRefusal = $_.Exception.Message
+        try { $port | Remove-PrinterPort } catch { $script:PortRefusal += " / given the port: $($_.Exception.Message)" }
+      }
     }
     if ($null -eq (Get-PrinterPort -Name $RawPort -ErrorAction SilentlyContinue)) { $true }
   } -Seconds 30 -EveryMs 1000
-  if (-not $portGone) { $left.Add("the port $RawPort, still held by Windows' spooler after 30 s$(if ($script:PortRefusal) { " ($($script:PortRefusal.Trim()))" })") }
+  if (-not $portGone) { $left.Add("the port $RawPort, which Windows would not remove within 30 s$(if ($script:PortRefusal) { ": $($script:PortRefusal.Trim())" })") }
   Remove-Item -LiteralPath $RawPort -Force -ErrorAction SilentlyContinue
   if (-not $Quiet) {
     if ($left.Count -eq 0) { Note "'$RawPrinter' and its port removed" }
