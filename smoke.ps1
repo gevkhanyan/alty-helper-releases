@@ -718,7 +718,7 @@ function Invoke-PrintCheck([string]$Label, [string]$Printer = '', [double]$Secon
       if ($line.Trim() -eq '') { continue }
       try { $line | ConvertFrom-Json } catch { [pscustomobject]@{ check = '?'; text = $line } }
     })
-  $command = "`"$Exe`" --print-check$(if ($Printer -ne '') { " `"$Printer`"" })"
+  $command = if ($Printer -ne '') { "`"$Exe`" --print-check `"$Printer`"" } else { "`"$Exe`" --print-check" }
   Save-Text "print-check-$Label.txt" "$command`nprocess $checkPid, exit code $(if ($ended) { $exitCode } else { "none: ended after $Seconds s" }), after $took s`n--- its standard output`n$stdout`n--- its standard error`n$stderr`n"
   # its PowerShell ends with it: the check closes it (print/check.ts:99-101, print/windows.ts:766-781)
   $gone = Wait-Until { if (@(Get-SpoolerShells | Where-Object { $_.ParentPid -eq $checkPid }).Count -eq 0) { $true } } -Seconds 10
