@@ -834,21 +834,29 @@ function Add-RawPrinter {
   return $RawDriver
 }
 
+# Takes check 4's printer, its port and its file off this computer again. What stays (Windows' spooler may hold a
+# port for a while after its printer goes) is the test's own leftover on a computer that is thrown away, and is
+# only noted.
 function Remove-RawPrinter([switch]$Quiet) {
   $left = [System.Collections.Generic.List[string]]::new()
   try {
     if ($null -ne (Get-Printer -Name $RawPrinter -ErrorAction SilentlyContinue)) { Remove-Printer -Name $RawPrinter }
   } catch {
-    $left.Add("the printer ($($_.Exception.Message))")
+    $left.Add("the printer '$RawPrinter' ($($_.Exception.Message))")
   }
-  # the spooler may hold the port a moment after the printer goes
+  $script:PortRefusal = ''
   $portGone = Wait-Until {
-    if ($null -ne (Get-PrinterPort -Name $RawPort -ErrorAction SilentlyContinue)) { Remove-PrinterPort -Name $RawPort }
+    if ($null -ne (Get-PrinterPort -Name $RawPort -ErrorAction SilentlyContinue)) {
+      try { Remove-PrinterPort -Name $RawPort } catch { $script:PortRefusal = $_.Exception.Message }
+    }
     if ($null -eq (Get-PrinterPort -Name $RawPort -ErrorAction SilentlyContinue)) { $true }
-  } -Seconds 10 -EveryMs 500
-  if (-not $portGone) { $left.Add('its port') }
+  } -Seconds 30 -EveryMs 1000
+  if (-not $portGone) { $left.Add("the port $RawPort, still held by Windows' spooler after 30 s$(if ($script:PortRefusal) { " ($($script:PortRefusal.Trim()))" })") }
   Remove-Item -LiteralPath $RawPort -Force -ErrorAction SilentlyContinue
-  if (-not $Quiet) { Note "'$RawPrinter' and its port removed$(if ($left.Count) { ', but not ' + ($left -join ', ') })" }
+  if (-not $Quiet) {
+    if ($left.Count -eq 0) { Note "'$RawPrinter' and its port removed" }
+    else { Note "removed, but for the test's own leftover on this runner (not the helper's): $($left -join '; ')" }
+  }
 }
 
 function Write-Report {
@@ -1090,7 +1098,7 @@ try {
     if ($HasPrint) {
       # The print process, unpaired, reads Windows' printers at once, for the page (print/worker.ts:508-509),
       # through its own Windows PowerShell, which first compiles the C# over winspool.drv and is given a minute for
-      # it (print/windows.ts:403, :570-616); the page shows what it says of itself (worker.ts:224-246)
+      # it (print/windows.ts:403, :570-616); the page shows what it says of itself (worker.ts:222-246)
       $read = Wait-Until {
         $x = Read-Status
         if ($null -ne $x -and $null -ne $x.print -and ($null -ne $x.print.printers -or $null -ne $x.print.printersProblem)) { $true }
