@@ -8,20 +8,34 @@
     1. the silent install: per user, its manifest asking for no administrator rights, nothing for the whole
        computer; the program, the Run key, the Start menu shortcut (this runner's user is an administrator,
        so a standard user's install is not tried);
-    2. the helper starts: one supervisor, one worker, its page on 127.0.0.1:47100, unpaired;
+    2. the helper starts: one supervisor, its worker and, from 0.3.0, its print process; its page on
+       127.0.0.1:47100, unpaired; the print process's own Windows PowerShell started and Windows' printers read;
     3. HTTPS to Alty's real server: the page's pairing with a deliberately wrong code reaches the server,
        which refuses it (nothing is paired and nothing changes there);
-    4. the worker, ended from outside, is started again by its supervisor;
-    5. two more starts, as from the Start menu shortcut, leave one supervisor and one worker;
-    6. a reinstall over the running helper stops it first, brings it back, keeps its data, still unpaired;
-    7. its log: the start lines, no code and no secret, no warning or error the test did not cause;
-    8. the silent uninstall leaves nothing behind.
-  Each check prints PASS or FAIL with what it saw. After a FAIL the script goes on and collects the evidence,
-  and it exits 1 if any check failed. The evidence (the helper's logs, its /api/status answers, the process
-  lists, the report) is written to -Evidence before the uninstall removes the helper's data folder. The
-  page's token and the helper's quit secrets are never printed, and are masked in everything saved.
+    4. from 0.3.0, Windows printing as the print process does it, through alty-helper.exe --print-check:
+       its PowerShell starts and compiles the C# over winspool.drv, it lists the printers exactly as Windows
+       lists them, a printer Windows does not have is refused with nothing sent, and a RAW print to a printer
+       this test adds (Windows' own text driver on a port that is a file) leaves Windows' queue with its
+       bytes unchanged in that file; the running print process lists that printer too;
+    5. the worker, ended from outside, is started again by its supervisor, the print process untouched;
+    6. from 0.3.0, the print process, ended from outside, is started again by its supervisor, the worker
+       untouched, its PowerShell ending with it and the new one starting its own;
+    7. two more starts, as from the Start menu shortcut, leave the same processes;
+    8. a reinstall over the running helper stops it first (the print process on the supervisor's word),
+       brings it back, keeps its data, still unpaired;
+    9. its logs (helper.log, and print.log from 0.3.0): the start lines, no code and no secret, no warning
+       or error the test did not cause;
+   10. the silent uninstall leaves nothing behind.
+  Checks 4 and 6 are for a release with a print process (0.3.0 and later, by the version the release's tag
+  names, which check 1 holds the installer to): for an older one they say SKIP, and every other check then
+  expects no print process at all. Each check prints PASS or FAIL with what it saw. After a FAIL the script
+  goes on and collects the evidence, and it exits 1 if any check failed. The evidence (the helper's logs,
+  its /api/status answers, the process lists, the print checks' output and bytes, the report) is written
+  to -Evidence before the uninstall removes the helper's data folder. The page's token and the helper's
+  quit secrets are never printed, and are masked in everything saved.
 
-  References such as main.ts:112 point into apps/helper of the Alty repository at the release's tag.
+  References such as main.ts:134 point into apps/helper of the Alty repository at the tag helper-v0.3.0
+  (api: and shared: into apps/api and packages/shared there).
 #>
 [CmdletBinding()]
 param(
@@ -44,39 +58,63 @@ $Evidence = (Resolve-Path -LiteralPath $Evidence).Path
 $WorkDir = (Get-Location).Path
 
 # ---------------------------------------------------------------------------------------------------------
-# What the installer and the helper say (installer/alty-helper.nsi and src/ at the release's tag)
+# What the installer and the helper say (installer/alty-helper.nsi and src/ at helper-v0.3.0)
 # ---------------------------------------------------------------------------------------------------------
-$AppId        = 'AltyHelper'                                                              # .nsi:30
-$ProgramDir   = Join-Path $env:LOCALAPPDATA 'Programs\Alty Helper'                        # .nsi:39
-$Exe          = Join-Path $ProgramDir 'alty-helper.exe'                                   # .nsi:31
-$Uninstaller  = Join-Path $ProgramDir 'uninstall.exe'                                     # .nsi:88
-$DataDir      = Join-Path $env:LOCALAPPDATA 'Alty Helper'                                 # .nsi:35, paths.ts:36
-$LogsDir      = Join-Path $DataDir 'logs'                                                 # paths.ts:45
-$LogFile      = Join-Path $LogsDir 'helper.log'                                           # log.ts:83
-$RuntimeFile  = Join-Path $DataDir 'runtime.json'                                         # paths.ts:44
-$Shortcut     = Join-Path ([Environment]::GetFolderPath('Programs')) 'Alty Helper.lnk'    # .nsi:32, :80
-$RunKey       = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'                     # .nsi:33, :91
-$UninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppId"        # .nsi:34, :95-103
-$AppKey       = "HKCU:\Software\$AppId"                                                   # .nsi:40, :89
-$Port         = 47100                                                                     # server.ts:10
-$PageUrl      = "http://127.0.0.1:$Port/"                                                 # server.ts:186, :194
-$ApiUrl       = 'https://api.alty.am'                                                     # store.ts:6
+$AppId           = 'AltyHelper'                                                           # .nsi:30
+$ProgramDir      = Join-Path $env:LOCALAPPDATA 'Programs\Alty Helper'                     # .nsi:39
+$Exe             = Join-Path $ProgramDir 'alty-helper.exe'                                # .nsi:31
+$Uninstaller     = Join-Path $ProgramDir 'uninstall.exe'                                  # .nsi:88
+$DataDir         = Join-Path $env:LOCALAPPDATA 'Alty Helper'                              # .nsi:35, paths.ts:51
+$LogsDir         = Join-Path $DataDir 'logs'                                              # paths.ts:60
+$LogFile         = Join-Path $LogsDir 'helper.log'                                        # log.ts:74
+$PrintLogFile    = Join-Path $LogsDir 'print.log'                                         # log.ts:76, print/worker.ts:110-115
+$RuntimeFile     = Join-Path $DataDir 'runtime.json'                                      # paths.ts:59
+$PrintStatusFile = Join-Path $DataDir 'print-status.json'                                 # paths.ts:65
+$Shortcut        = Join-Path ([Environment]::GetFolderPath('Programs')) 'Alty Helper.lnk' # .nsi:32, :80
+$RunKey          = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'                  # .nsi:33, :91
+$UninstallKey    = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppId"     # .nsi:34, :95-103
+$AppKey          = "HKCU:\Software\$AppId"                                                # .nsi:40, :89
+$Port            = 47100                                                                  # server.ts:10
+$PageUrl         = "http://127.0.0.1:$Port/"                                              # server.ts:245, :253
+$ApiUrl          = 'https://api.alty.am'                                                  # store.ts:6
 # a code the server can never issue: its codes leave out O and 0 (api: lib/crypto.ts:120-121), so no device
-# has this one's hash and the server answers 404 registration_invalid (api: device/service.ts:381-385).
-# 9 characters, as the page and the server take a code (status/server.ts:146; shared: api/helper.ts:62-64)
-$WrongCode    = 'OOOO-0000'
-# the page's title in Armenian, 'Alty' and the word for helper (i18n/hy.ts:8), kept ASCII in this file
-$HyTitle      = 'Alty ' + (-join ([char[]](0x0585, 0x0563, 0x0576, 0x0561, 0x056F, 0x0561, 0x0576)))
+# has this one's hash and the server answers 404 registration_invalid (api: device/service.ts:397-401).
+# 9 characters, as the page and the server take a code (status/server.ts:168; shared: api/helper.ts:66-68)
+$WrongCode       = 'OOOO-0000'
+# the page's title in Armenian, 'Alty' and the word for helper (i18n/hy.ts:10), kept ASCII in this file
+$HyTitle         = 'Alty ' + (-join ([char[]](0x0585, 0x0563, 0x0576, 0x0561, 0x056F, 0x0561, 0x0576)))
+
+# The print process (--print-worker) came with 0.3.0: the supervisor starts it beside the worker (main.ts:168-191)
+$PrintSince      = [version]'0.3.0'
+# Windows PowerShell by its full path, as the print process starts it for Windows' spooler (fiscal/powershell.ts:40-49,
+# print/windows.ts:553, :570-575)
+$SpoolerExe      = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+# what check 4 prints on: a printer this test adds, with Windows' own text driver on a local port that is a file
+# (apps/helper/README.md «Not proven on Windows yet»), and a name no printer has
+$RawPrinter      = 'Alty Raw Check'
+$RawDriver       = 'Generic / Text Only'
+$RawPort         = Join-Path $env:ProgramData 'alty-print-check.prn'
+$NoPrinter       = 'Alty No Such Printer'
+
+# The version under test, as the release's tag names it (check 1 holds the installer's version resource to it,
+# check 9 every start line): a release before 0.3.0 has no print process, and none may run
+if ($ExpectedVersion -notmatch '^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?$') { throw "not a release version: '$ExpectedVersion'" }
+$VersionCore = [version]::new([int]$Matches[1], [int]$Matches[2], [int]$Matches[3])
+$HasPrint    = $VersionCore -ge $PrintSince
+$PrintCount  = if ($HasPrint) { 1 } else { 0 }
+$WholeText   = if ($HasPrint) { 'one supervisor, one worker and one print process' } else { 'one supervisor and one worker' }
 
 $CheckNames = [ordered]@{
-  '1' = 'Silent install: per user, asks for no administrator rights'
-  '2' = 'The helper starts: one supervisor, one worker, the page on 127.0.0.1:47100, unpaired'
-  '3' = 'HTTPS to the real server: the page pairs with a wrong code, the server refuses it'
-  '4' = 'The worker comes back after it is ended'
-  '5' = 'One instance only: two more starts, as from the Start menu shortcut'
-  '6' = 'Reinstall over the running helper'
-  '7' = 'The log: start lines, no code, no secret, nothing unexpected'
-  '8' = 'Silent uninstall: nothing left behind'
+  '1'  = 'Silent install: per user, asks for no administrator rights'
+  '2'  = 'The helper starts: one supervisor, one worker, one print process (from 0.3.0), the page on 127.0.0.1:47100, unpaired'
+  '3'  = 'HTTPS to the real server: the page pairs with a wrong code, the server refuses it'
+  '4'  = 'Windows printing as the print process does it (--print-check): PowerShell, the C#, the printers, a RAW print'
+  '5'  = 'The worker comes back after it is ended'
+  '6'  = 'The print process comes back after it is ended'
+  '7'  = 'One instance only: two more starts, as from the Start menu shortcut'
+  '8'  = 'Reinstall over the running helper'
+  '9'  = 'The logs: start lines, no code, no secret, nothing unexpected'
+  '10' = 'Silent uninstall: nothing left behind'
 }
 
 # what one check hands the next (the page's address, the processes) and what must never be shown
@@ -89,6 +127,8 @@ $S = @{
   Link                   = $null
   Supervisor             = $null
   Worker                 = $null
+  Print                  = $null
+  SpoolerCommand         = $null
   FirstSupervisorPid     = $null
   ReinstallSupervisorPid = $null
 }
@@ -131,7 +171,9 @@ function Expect($Condition, [string]$What) {
 # the line the summary table shows for a check that passed
 function Headline([string]$Text) { $script:Current.Headline = Protect-Text $Text }
 
-function Invoke-Check([string]$Id, [scriptblock]$Body) {
+# A check of what came with a release ($Since) is skipped for an older one, and says so: the rest hold an older
+# release to its own rules (no print process at all before 0.3.0)
+function Invoke-Check([string]$Id, [scriptblock]$Body, [version]$Since) {
   $script:Current = [pscustomobject]@{
     Id       = $Id
     Name     = $CheckNames[$Id]
@@ -143,6 +185,14 @@ function Invoke-Check([string]$Id, [scriptblock]$Body) {
   }
   Write-Host ''
   Write-Host "=== $Id. $($CheckNames[$Id])"
+  if ($null -ne $Since -and $VersionCore -lt $Since) {
+    $script:Current.Status = 'SKIP'
+    $script:Current.Headline = "not for $ExpectedVersion`: what it checks came with $Since"
+    $script:Current.Evidence.Add($script:Current.Headline)
+    Write-Host "--- SKIP  $Id. $($CheckNames[$Id]) ($($script:Current.Headline))"
+    $Results.Add($script:Current)
+    return
+  }
   $checkClock = [System.Diagnostics.Stopwatch]::StartNew()
   try {
     $null = & $Body
@@ -205,16 +255,32 @@ function Close-StrayHandles {
   [GC]::Collect()
 }
 
-# The helper's processes and their part: the worker has --worker in its command line (main.ts:41, :120-122),
-# --quit is the installer's short-lived ask (main.ts:39), any other alty-helper.exe is a supervisor (main.ts:43).
+# what follows the program in a command line: '' for the supervisor the Run key starts, '--worker' ...
+function Get-ArgumentsOf([string]$CommandLine) {
+  return ($CommandLine -replace '^\s*("[^"]*"|\S+)\s*', '').Trim()
+}
+
+# A helper process's part, read from its command line in the order main.ts:45-57 reads it: --version, pair,
+# --quit (the installer's short-lived ask), --print-check (a check of Windows' printing), --print-worker (the
+# print process, since 0.3.0: main.ts:170-190), --worker (main.ts:154-167); any other alty-helper.exe is a
+# supervisor (no arguments, or --open).
+function Get-RoleOf([string]$CommandLine) {
+  if ($CommandLine -match '(^|\s)--version(\s|$)') { return 'version' }
+  if ((Get-ArgumentsOf $CommandLine) -match '^pair(\s|$)') { return 'pair' }
+  if ($CommandLine -match '(^|\s)--quit(\s|$)') { return 'quit' }
+  if ($CommandLine -match '(^|\s)--print-check(\s|$)') { return 'check' }
+  if ($CommandLine -match '(^|\s)--print-worker(\s|$)') { return 'print' }
+  if ($CommandLine -match '(^|\s)--worker(\s|$)') { return 'worker' }
+  return 'supervisor'
+}
+
 function Get-HelperProcesses {
   foreach ($p in @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'alty-helper.exe'")) {
     $cmd = [string]$p.CommandLine
-    $role = if ($cmd -match '(^|\s)--worker(\s|$)') { 'worker' } elseif ($cmd -match '(^|\s)--quit(\s|$)') { 'quit' } else { 'supervisor' }
     [pscustomobject]@{
       Pid         = [int]$p.ProcessId
       ParentPid   = [int]$p.ParentProcessId
-      Role        = $role
+      Role        = Get-RoleOf $cmd
       Path        = [string]$p.ExecutablePath
       CommandLine = $cmd
       Started     = $p.CreationDate
@@ -228,8 +294,19 @@ function Get-Helper {
     All         = $all
     Supervisors = @($all | Where-Object { $_.Role -eq 'supervisor' })
     Workers     = @($all | Where-Object { $_.Role -eq 'worker' })
-    Others      = @($all | Where-Object { $_.Role -eq 'quit' })
+    Prints      = @($all | Where-Object { $_.Role -eq 'print' })
+    Others      = @($all | Where-Object { $_.Role -notin 'supervisor', 'worker', 'print' })
   }
+}
+
+# A running helper: one supervisor, one worker and, from 0.3.0, one print process (none before)
+function Test-Running($Helper) {
+  return ($Helper.Supervisors.Count -eq 1 -and $Helper.Workers.Count -eq 1 -and $Helper.Prints.Count -eq $PrintCount)
+}
+
+# ... and nothing else of the helper's beside it
+function Test-Whole($Helper) {
+  return ((Test-Running $Helper) -and $Helper.Others.Count -eq 0)
 }
 
 function Format-Helper($Helper) {
@@ -237,34 +314,66 @@ function Format-Helper($Helper) {
   return (($Helper.All | ForEach-Object { "$($_.Role) $($_.Pid) (parent $($_.ParentPid))" }) -join ', ')
 }
 
+# The Windows PowerShell a print process (or a --print-check) keeps for Windows' spooler: powershell.exe with the
+# constant script that compiles the C# class AltySpooler and serves its input (print/windows.ts:386-400, :570-575)
+function Get-SpoolerShells {
+  foreach ($p in @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'powershell.exe'")) {
+    $cmd = [string]$p.CommandLine
+    if (-not $cmd.Contains('[AltySpooler]::Serve()')) { continue }
+    [pscustomobject]@{
+      Pid         = [int]$p.ProcessId
+      ParentPid   = [int]$p.ParentProcessId
+      Role        = 'spooler'
+      Path        = [string]$p.ExecutablePath
+      CommandLine = $cmd
+      Started     = $p.CreationDate
+    }
+  }
+}
+
+function Format-Shells($Shells) {
+  $list = @($Shells)
+  if ($list.Count -eq 0) { return 'no spooler PowerShell' }
+  return (($list | ForEach-Object { "PowerShell $($_.Pid) (parent $($_.ParentPid))" }) -join ', ')
+}
+
+# the helper's processes, and the spooler's PowerShell with its long constant command line cut short
 function Save-Processes([string]$Label) {
-  Save-Json "processes-$Label.json" @(Get-HelperProcesses)
+  $shells = @(Get-SpoolerShells | ForEach-Object {
+      [pscustomobject]@{
+        Pid         = $_.Pid
+        ParentPid   = $_.ParentPid
+        Role        = $_.Role
+        Path        = $_.Path
+        CommandLine = "$($_.CommandLine.Substring(0, [Math]::Min(120, $_.CommandLine.Length))) ... ($($_.CommandLine.Length) characters)"
+        Started     = $_.Started
+      } })
+  Save-Json "processes-$Label.json" (@(Get-HelperProcesses) + $shells)
 }
 
-# what follows the program in a command line: '' for the supervisor the Run key starts, '--worker' ...
-function Get-ArgumentsOf([string]$CommandLine) {
-  return ($CommandLine -replace '^\s*("[^"]*"|\S+)\s*', '').Trim()
-}
-
-# Samples the processes for a while: the same one supervisor and one worker throughout, and nothing else.
-function Watch-Steady($Supervisor, $Worker, [double]$Seconds) {
+# Samples the processes for a while: the same supervisor, worker and (from 0.3.0) print process throughout,
+# and nothing else.
+function Watch-Steady($Supervisor, $Worker, $Print, [double]$Seconds) {
+  $count = if ($null -ne $Print) { 3 } else { 2 }
+  $named = "supervisor $($Supervisor.Pid) and worker $($Worker.Pid)$(if ($null -ne $Print) { " and print process $($Print.Pid)" })"
   $watch = [System.Diagnostics.Stopwatch]::StartNew()
   $looks = 0
   while ($watch.Elapsed.TotalSeconds -lt $Seconds) {
     $h = Get-Helper
     $looks++
-    $same = ($h.All.Count -eq 2 -and $h.Supervisors.Count -eq 1 -and $h.Workers.Count -eq 1 -and
-      $h.Supervisors[0].Pid -eq $Supervisor.Pid -and $h.Workers[0].Pid -eq $Worker.Pid)
+    $same = ($h.All.Count -eq $count -and $h.Supervisors.Count -eq 1 -and $h.Workers.Count -eq 1 -and
+      $h.Supervisors[0].Pid -eq $Supervisor.Pid -and $h.Workers[0].Pid -eq $Worker.Pid -and
+      ($null -eq $Print -or ($h.Prints.Count -eq 1 -and $h.Prints[0].Pid -eq $Print.Pid)))
     if (-not $same) {
-      return [pscustomobject]@{ Ok = $false; Text = "after $([math]::Round($watch.Elapsed.TotalSeconds, 1)) s: $(Format-Helper $h) (expected only supervisor $($Supervisor.Pid) and worker $($Worker.Pid))" }
+      return [pscustomobject]@{ Ok = $false; Text = "after $([math]::Round($watch.Elapsed.TotalSeconds, 1)) s: $(Format-Helper $h) (expected only $named)" }
     }
     Start-Sleep -Milliseconds 250
   }
-  return [pscustomobject]@{ Ok = $true; Text = "for $Seconds s ($looks looks) only supervisor $($Supervisor.Pid) and worker $($Worker.Pid) run" }
+  return [pscustomobject]@{ Ok = $true; Text = "for $Seconds s ($looks looks) only $named run" }
 }
 
 # A file the helper may be writing, read as its own writes allow (an append, a rename over it): this read
-# never makes it drop a log line (log.ts:118-124) or wait on runtime.json (files.ts:29-48).
+# never makes it drop a log line (log.ts:134-146) or wait on runtime.json (files.ts:29-48).
 function Read-SharedText([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
   try {
@@ -327,6 +436,14 @@ function Read-Runtime {
   return $rt
 }
 
+# print-status.json, what the print process says of itself, written whole by it (print/status.ts:19-49,
+# print/worker.ts:162-203); nothing secret in it
+function Read-PrintStatus {
+  $text = Read-SharedText $PrintStatusFile
+  if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+  try { return ($text | ConvertFrom-Json) } catch { return $null }
+}
+
 function Get-RegValue([string]$Key, [string]$Name) {
   $item = Get-Item -LiteralPath $Key -ErrorAction SilentlyContinue
   if ($null -eq $item) { return $null }
@@ -366,7 +483,7 @@ function Invoke-Page {
   )
   $request = @{ Uri = "$Base$Path"; Method = $Method; Headers = $Headers; TimeoutSec = $TimeoutSec; SkipHttpErrorCheck = $true }
   if ($PSBoundParameters.ContainsKey('Body')) {
-    # as bytes, so the Content-Type goes exactly as the page's script sends it (page.ts:209)
+    # as bytes, so the Content-Type goes exactly as the page's script sends it (page.ts:366-368)
     $request.Body = [System.Text.Encoding]::UTF8.GetBytes($Body)
     $request.ContentType = 'application/json'
   }
@@ -401,7 +518,7 @@ function Test-Page([string]$Base = $S.Url) {
   return ($null -ne $response -and $response.StatusCode -eq 200)
 }
 
-# GET /api/status (server.ts:111-114; its shape: status/types.ts:14-33), each answer kept as evidence.
+# GET /api/status (server.ts:133-136; its shape: status/types.ts:77-100), each answer kept as evidence.
 function Get-Status([string]$Base = $S.Url) {
   $response = Invoke-Page -Path 'api/status' -Base $Base
   if ($null -eq $response -or $response.StatusCode -ne 200) { return $null }
@@ -409,6 +526,13 @@ function Get-Status([string]$Base = $S.Url) {
   $S.StatusSeq++
   Save-Text ('status-{0:00}-check{1}.json' -f $S.StatusSeq, $script:Current.Id) $text
   try { return ($text | ConvertFrom-Json) } catch { return $null }
+}
+
+# The same answer, not kept: for the waits, which ask it again and again
+function Read-Status([string]$Base = $S.Url) {
+  $response = Invoke-Page -Path 'api/status' -Base $Base -TimeoutSec 3
+  if ($null -eq $response -or $response.StatusCode -ne 200) { return $null }
+  try { return ((Get-Body $response) | ConvertFrom-Json) } catch { return $null }
 }
 
 # A request under a Host of our choosing (Invoke-WebRequest always sends the real one); its status line.
@@ -430,9 +554,18 @@ function Send-RawRequest([string]$HostHeader) {
   }
 }
 
-# helper.log's lines, parsed: "<ISO time> <LEVEL> <message> <JSON facts>" (log.ts:51-58).
-function Get-LogEntries {
-  $text = Read-SharedText $LogFile
+# a log line's time, as the helper writes it (ISO, UTC); $null when it is not one
+function ConvertTo-LogTime([string]$At) {
+  $time = [DateTime]::MinValue
+  $styles = [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal
+  if ([DateTime]::TryParse($At, [Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$time)) { return $time }
+  return $null
+}
+
+# A log's lines, parsed: "<ISO time> <LEVEL> <message> <JSON facts>" (log.ts:64-71); helper.log unless said,
+# print.log being the print process's own (log.ts:73-76).
+function Get-LogEntries([string]$Path = $LogFile) {
+  $text = Read-SharedText $Path
   if ($null -eq $text) { return }
   foreach ($line in ($text -split "`r?`n")) {
     if ($line -eq '') { continue }
@@ -443,19 +576,19 @@ function Get-LogEntries {
       $dataText = if ($Matches.ContainsKey('data')) { $Matches['data'] } else { '' }
       $data = $null
       if ($dataText) { try { $data = $dataText | ConvertFrom-Json } catch { $data = $null } }
-      [pscustomobject]@{ At = $at; Level = $level; Message = $message; Data = $data; Line = $line }
+      [pscustomobject]@{ At = $at; Time = (ConvertTo-LogTime $at); Level = $level; Message = $message; Data = $data; Line = $line }
     } else {
-      [pscustomobject]@{ At = ''; Level = '?'; Message = $line; Data = $null; Line = $line }
+      [pscustomobject]@{ At = ''; Time = $null; Level = '?'; Message = $line; Data = $null; Line = $line }
     }
   }
 }
 
-function Get-LogCount([string]$Message) {
-  return @(Get-LogEntries | Where-Object { $_.Message -eq $Message }).Count
+function Get-LogCount([string]$Message, [string]$Path = $LogFile) {
+  return @(Get-LogEntries $Path | Where-Object { $_.Message -eq $Message }).Count
 }
 
-function Get-LogTail([int]$Count = 20) {
-  return @(Get-LogEntries | Select-Object -Last $Count | ForEach-Object { $_.Line })
+function Get-LogTail([int]$Count = 20, [string]$Path = $LogFile) {
+  return @(Get-LogEntries $Path | Select-Object -Last $Count | ForEach-Object { $_.Line })
 }
 
 # the index of the first entry the test accepts, or -1
@@ -472,6 +605,8 @@ function Find-Index($Items, [scriptblock]$Test) {
 function Get-Leftovers {
   $helper = @(Get-HelperProcesses)
   if ($helper.Count -gt 0) { 'processes: ' + (($helper | ForEach-Object { "$($_.Role) $($_.Pid)" }) -join ', ') }
+  $shells = @(Get-SpoolerShells)
+  if ($shells.Count -gt 0) { "the print process's PowerShell still runs: $(Format-Shells $shells)" }
   # NSIS's uninstaller runs from its own copy in %TEMP%\~nsu*.tmp while it works
   $copies = @(Get-CimInstance -ClassName Win32_Process | Where-Object { [string]$_.ExecutablePath -like '*\~nsu*.tmp\*' })
   if ($copies.Count -gt 0) { 'the uninstaller still runs: ' + (($copies | ForEach-Object { "$($_.Name) $($_.ProcessId)" }) -join ', ') }
@@ -487,19 +622,27 @@ function Get-Leftovers {
   if (Test-Path -LiteralPath $Shortcut) { "the Start menu shortcut ($Shortcut)" }
 }
 
+# the helper's logs: helper.log and, from 0.3.0, print.log, with the files moved aside past 1 MB (log.ts:113-132)
+function Get-HelperLogFiles {
+  @(Get-ChildItem -LiteralPath $LogsDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'helper.log*' -or $_.Name -like 'print.log*' })
+}
+
 # the helper's logs into the evidence, read as the helper's writes allow; the names copied
 function Save-Logs {
-  foreach ($file in @(Get-ChildItem -LiteralPath $LogsDir -File -Filter 'helper.log*' -ErrorAction SilentlyContinue)) {
+  foreach ($file in @(Get-HelperLogFiles)) {
     Save-Text (Join-Path 'logs' $file.Name) (Read-SharedText $file.FullName)
     $file.Name
   }
 }
 
-# Everything the uninstall will take, kept first: logs, runtime.json (secrets masked), processes, keys, folders.
+# Everything the uninstall will take, kept first: logs, runtime.json (secrets masked), print-status.json,
+# processes, keys, folders.
 function Save-Evidence([string]$Label) {
   try {
     $null = @(Save-Logs)
     Save-Json "runtime-$Label.json" (Read-Runtime)
+    $printStatus = Read-SharedText $PrintStatusFile
+    if ($null -ne $printStatus) { Save-Text "print-status-$Label.json" $printStatus }
     Save-Processes $Label
     $apps = $null
     if (Test-Path -LiteralPath $UninstallKey) {
@@ -523,6 +666,191 @@ function Save-Evidence([string]$Label) {
   }
 }
 
+# ---------------------------------------------------------------------------------------------------------
+# Windows' printing, as the print process does it (check 4)
+# ---------------------------------------------------------------------------------------------------------
+
+# alty-helper.exe --print-check [PRINTER] (main.ts:51-52, :279-293; print/check.ts:40-102), run as a person at a PC
+# runs it, from this folder and beside the running helper: its JSON lines on its standard output, which a windowed
+# program has only when it is read (print/check.ts:14-16), and its exit code; and the Windows PowerShell it starts
+# for the spooler (print/windows.ts:570-575), looked at while it runs, so its command line can be read.
+function Invoke-PrintCheck([string]$Label, [string]$Printer = '', [double]$Seconds = 150) {
+  $info = [System.Diagnostics.ProcessStartInfo]::new($Exe)
+  $info.ArgumentList.Add('--print-check')
+  if ($Printer -ne '') { $info.ArgumentList.Add($Printer) }
+  $info.UseShellExecute = $false
+  $info.CreateNoWindow = $true
+  $info.WorkingDirectory = $WorkDir
+  $info.RedirectStandardOutput = $true
+  $info.RedirectStandardError = $true
+  $info.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+  $info.StandardErrorEncoding = [System.Text.UTF8Encoding]::new($false)
+  $clock = [System.Diagnostics.Stopwatch]::StartNew()
+  $shells = [ordered]@{}
+  $ended = $false
+  $exitCode = $null
+  $stdout = ''
+  $stderr = ''
+  $process = [System.Diagnostics.Process]::Start($info)
+  $checkPid = $process.Id
+  try {
+    $out = $process.StandardOutput.ReadToEndAsync()
+    $err = $process.StandardError.ReadToEndAsync()
+    while (-not $ended) {
+      foreach ($sh in @(Get-SpoolerShells | Where-Object { $_.ParentPid -eq $checkPid })) { $shells["$($sh.Pid)"] = $sh }
+      $ended = $process.WaitForExit(150)
+      if (-not $ended -and $clock.Elapsed.TotalSeconds -ge $Seconds) { break }
+    }
+    if ($ended) {
+      $process.WaitForExit()
+      $exitCode = $process.ExitCode
+    } else {
+      try { $process.Kill($true) } catch { }
+      $null = $process.WaitForExit(10000)
+    }
+    if ($out.Wait(10000)) { $stdout = [string]$out.Result }
+    if ($err.Wait(10000)) { $stderr = [string]$err.Result }
+  } finally {
+    Close-Process $process
+  }
+  $took = [math]::Round($clock.Elapsed.TotalSeconds, 1)
+  $lines = @(foreach ($line in ($stdout -split "`r?`n")) {
+      if ($line.Trim() -eq '') { continue }
+      try { $line | ConvertFrom-Json } catch { [pscustomobject]@{ check = '?'; text = $line } }
+    })
+  $command = "`"$Exe`" --print-check$(if ($Printer -ne '') { " `"$Printer`"" })"
+  Save-Text "print-check-$Label.txt" "$command`nprocess $checkPid, exit code $(if ($ended) { $exitCode } else { "none: ended after $Seconds s" }), after $took s`n--- its standard output`n$stdout`n--- its standard error`n$stderr`n"
+  # its PowerShell ends with it: the check closes it (print/check.ts:99-101, print/windows.ts:766-781)
+  $gone = Wait-Until { if (@(Get-SpoolerShells | Where-Object { $_.ParentPid -eq $checkPid }).Count -eq 0) { $true } } -Seconds 10
+  [pscustomobject]@{
+    Command    = $command
+    Pid        = $checkPid
+    Ended      = $ended
+    ExitCode   = $exitCode
+    Seconds    = $took
+    Lines      = $lines
+    Stdout     = $stdout
+    Stderr     = $stderr
+    Shells     = @($shells.Values)
+    ShellsGone = ($gone -eq $true)
+  }
+}
+
+# what a --print-check said on its standard output, on one line
+function Format-Said($Run) {
+  $text = (($Run.Stdout -split "`r?`n") | Where-Object { $_.Trim() -ne '' }) -join ' / '
+  if ($text.Length -gt 500) { $text = $text.Substring(0, 500) + ' ...' }
+  if ($text -eq '') { return '(nothing on its standard output)' }
+  return $text
+}
+
+# the helper's printers (HelperPrinterDto: shared api/print.ts), one line
+function Format-Printers($Printers) {
+  $list = @($Printers)
+  if ($list.Count -eq 0) { return 'none' }
+  return (($list | ForEach-Object { "'$($_.name)' ($(if ($_.isDefault) { 'default, ' })$($_.state), driver '$($_.driver)', port '$($_.port)', $($_.jobs) queued)" }) -join ', ')
+}
+
+# Windows' printers as Windows itself lists them (WMI), for the helper's list to be held to
+function Get-WindowsPrinters {
+  foreach ($w in @(Get-CimInstance -ClassName Win32_Printer)) {
+    [pscustomobject]@{ Name = [string]$w.Name; Driver = [string]$w.DriverName; Port = [string]$w.PortName; Default = [bool]$w.Default }
+  }
+}
+
+function Format-WindowsPrinters($Windows) {
+  $list = @($Windows)
+  if ($list.Count -eq 0) { return 'none' }
+  return (($list | ForEach-Object { "'$($_.Name)' ($(if ($_.Default) { 'default, ' })driver '$($_.Driver)', port '$($_.Port)')" }) -join ', ')
+}
+
+# How the helper's list differs from Windows' own: one line for each difference (none: the same printers, each
+# with Windows' driver, port and default; print/windows.ts:177-215, print/spooler.ts:274-287)
+function Compare-Printers($Listed, $Windows) {
+  $listed = @($Listed)
+  foreach ($w in @($Windows)) {
+    $same = @($listed | Where-Object { [string]$_.name -ceq $w.Name })
+    if ($same.Count -ne 1) { "'$($w.Name)' is listed $($same.Count) times"; continue }
+    $x = $same[0]
+    if ([string]$x.driver -cne $w.Driver) { "'$($w.Name)' has driver '$($x.driver)', Windows says '$($w.Driver)'" }
+    if ([string]$x.port -cne $w.Port) { "'$($w.Name)' has port '$($x.port)', Windows says '$($w.Port)'" }
+    if ([bool]$x.isDefault -ne $w.Default) { "'$($w.Name)' is default: $($x.isDefault), Windows says $($w.Default)" }
+  }
+  foreach ($x in $listed) {
+    if (@($Windows | Where-Object { $_.Name -ceq [string]$x.name }).Count -eq 0) { "'$($x.name)' is not one of Windows' printers" }
+  }
+}
+
+# Each --print-check's own PowerShell: Windows PowerShell by its full path, with exactly the print process's
+# command line (the constant script, print/windows.ts:386-400), so a printer's name never travels in it but on
+# its input only (:15-26); and ended once the check ended
+function Test-CheckShells($Run, [string]$LaneCommand, [string]$Printer = '') {
+  $shells = @($Run.Shells)
+  Expect ($shells.Count -ge 1 -and @($shells | Where-Object { $_.Path -ine $SpoolerExe }).Count -eq 0) "it ran its own Windows PowerShell: $(Format-Shells $shells), $SpoolerExe"
+  $same = @($shells | Where-Object { $_.CommandLine -ceq $LaneCommand })
+  Expect ($shells.Count -ge 1 -and $same.Count -eq $shells.Count) "with exactly the print process's command line ($(if ($LaneCommand) { "$($LaneCommand.Length) characters" } else { 'none known' }))"
+  if ($Printer -ne '') {
+    $named = @($shells | Where-Object { $_.CommandLine.Contains($Printer) })
+    Expect ($shells.Count -ge 1 -and $named.Count -eq 0) "'$Printer' is not in its command line: the name went on its input"
+  }
+  Expect $Run.ShellsGone 'its PowerShell ended with it (print/check.ts:99-101, print/windows.ts:766-781)'
+}
+
+# The check's print exactly as print/check.ts:20-35 makes it: ESC @, 'Alty: Windows printing works' and the time
+# it was made (ISO), each ended by LF, then ESC d 4 and GS V 66 0: 63 bytes
+function Test-CheckBytes([byte[]]$Bytes, [DateTime]$Since) {
+  $hex = (@($Bytes | Select-Object -First 80 | ForEach-Object { '{0:X2}' -f $_ }) -join ' ')
+  if ($Bytes.Length -ne 63) { return [pscustomobject]@{ Ok = $false; Text = "$($Bytes.Length) bytes, not the 63 the check writes: $hex" } }
+  $tail = [byte[]](0x1B, 0x64, 0x04, 0x1D, 0x56, 0x42, 0x00)
+  $tailOk = $true
+  for ($i = 0; $i -lt $tail.Length; $i++) { if ($Bytes[56 + $i] -ne $tail[$i]) { $tailOk = $false } }
+  $headOk = $Bytes[0] -eq 0x1B -and $Bytes[1] -eq 0x40
+  $text = [System.Text.Encoding]::ASCII.GetString($Bytes, 2, 54)
+  $when = $null
+  if ($text -cmatch '^Alty: Windows printing works\n(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z)\n$') { $when = ConvertTo-LogTime $Matches[1] }
+  $timely = $null -ne $when -and $when -ge $Since.AddSeconds(-5) -and $when -le [DateTime]::UtcNow.AddSeconds(5)
+  $shown = $text.Replace("`n", '\n')
+  return [pscustomobject]@{
+    Ok   = ($headOk -and $tailOk -and $timely)
+    Text = "ESC @ $(if ($headOk) { 'first' } else { 'missing' }), '$shown'$(if (-not $timely) { ' (not the text and time of this check)' }), ESC d 4 GS V 66 0 $(if ($tailOk) { 'last' } else { 'missing' })"
+  }
+}
+
+# Check 4's printer: Windows' own text driver (from Windows' driver store, as the Add Printer wizard takes it), a
+# local port that is a file, and a printer on both. Its driver's name, or a throw when Windows has no such driver.
+function Add-RawPrinter {
+  Remove-RawPrinter -Quiet
+  Remove-Item -LiteralPath $RawPort -Force -ErrorAction SilentlyContinue
+  if ($null -eq (Get-PrinterDriver -Name $RawDriver -ErrorAction SilentlyContinue)) {
+    try {
+      Add-PrinterDriver -Name $RawDriver
+    } catch {
+      $drivers = @(Get-PrinterDriver -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+      throw "Windows would not add its driver '$RawDriver' ($($_.Exception.Message)); it has: $($drivers -join ', ')"
+    }
+  }
+  Add-PrinterPort -Name $RawPort
+  Add-Printer -Name $RawPrinter -DriverName $RawDriver -PortName $RawPort
+  return $RawDriver
+}
+
+function Remove-RawPrinter([switch]$Quiet) {
+  $left = [System.Collections.Generic.List[string]]::new()
+  try {
+    if ($null -ne (Get-Printer -Name $RawPrinter -ErrorAction SilentlyContinue)) { Remove-Printer -Name $RawPrinter }
+  } catch {
+    $left.Add("the printer ($($_.Exception.Message))")
+  }
+  # the spooler may hold the port a moment after the printer goes
+  $portGone = Wait-Until {
+    if ($null -ne (Get-PrinterPort -Name $RawPort -ErrorAction SilentlyContinue)) { Remove-PrinterPort -Name $RawPort }
+    if ($null -eq (Get-PrinterPort -Name $RawPort -ErrorAction SilentlyContinue)) { $true }
+  } -Seconds 10 -EveryMs 500
+  if (-not $portGone) { $left.Add('its port') }
+  Remove-Item -LiteralPath $RawPort -Force -ErrorAction SilentlyContinue
+  if (-not $Quiet) { Note "'$RawPrinter' and its port removed$(if ($left.Count) { ', but not ' + ($left -join ', ') })" }
+}
+
 function Write-Report {
   $rows = @(foreach ($id in $CheckNames.Keys) {
       $r = $Results | Where-Object { $_.Id -eq $id } | Select-Object -First 1
@@ -534,12 +862,14 @@ function Write-Report {
       }
     })
   $passed = @($rows | Where-Object { $_.Status -eq 'PASS' }).Count
-  $script:Verdict = if ($passed -eq $rows.Count) { 'PASS' } else { 'FAIL' }
+  $skipped = @($rows | Where-Object { $_.Status -eq 'SKIP' }).Count
+  $script:Verdict = if ($passed + $skipped -eq $rows.Count) { 'PASS' } else { 'FAIL' }
+  $counted = "$passed of $($rows.Count) checks passed$(if ($skipped) { ", $skipped skipped (what they check came after $ExpectedVersion)" })"
 
   $table = [System.Collections.Generic.List[string]]::new()
   $table.Add("### $($script:Verdict): Alty helper $ExpectedVersion on $($Environment.os)")
   $table.Add('')
-  $table.Add("$passed of $($rows.Count) checks passed. The run's artifact keeps the evidence: the helper's logs, its /api/status answers, the process lists and report.md.")
+  $table.Add("$counted. The run's artifact keeps the evidence: the helper's logs, its /api/status answers, the process lists, the print checks' output and report.md.")
   $table.Add('')
   $table.Add('| # | Check | Result | Seconds | What it saw |')
   $table.Add('|---|---|---|---|---|')
@@ -566,7 +896,7 @@ function Write-Report {
   if ($stepSummary) { Add-Content -LiteralPath $stepSummary -Value (Protect-Text ($summary + "`n")) -Encoding utf8 }
 
   Write-Host ''
-  Write-Host "=== $($script:Verdict): $passed of $($rows.Count) checks passed"
+  Write-Host "=== $($script:Verdict): $counted"
   foreach ($row in $rows) { Write-Host ("    {0,-7} {1}. {2}" -f $row.Status, $row.Id, $row.Name) }
 }
 
@@ -584,6 +914,7 @@ $Environment = [ordered]@{
   installer       = $Installer
   installerSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $Installer).Hash.ToLowerInvariant()
   expectedVersion = $ExpectedVersion
+  printProcess    = $(if ($HasPrint) { "expected (since $PrintSince)" } else { "none: it came with $PrintSince" })
   startedUtc      = [DateTime]::UtcNow.ToString('o')
 }
 Write-Host '=== Where it runs'
@@ -682,38 +1013,46 @@ try {
   # -------------------------------------------------------------------------------------------------------
   Invoke-Check '2' {
     if ($null -eq $S.InstalledAt) { throw 'the install did not run' }
-    # the page on 47100 unless ALTY_HELPER_PORT says otherwise (worker.ts:243-256), within 20 s of the install
+    # the page on 47100 unless ALTY_HELPER_PORT says otherwise (worker.ts:474-487), within 20 s of the install
     $window = [Math]::Max(1, ($S.InstalledAt.AddSeconds(20) - [DateTime]::UtcNow).TotalSeconds)
     $up = Wait-Until { Test-Page -Base $PageUrl } -Seconds $window
     $after = [math]::Round(([DateTime]::UtcNow - $S.InstalledAt).TotalSeconds, 1)
     Expect ($up -eq $true) "the page answered at $PageUrl $after s after the install"
 
-    # its start is complete once runtime.json names the worker (worker.ts:257-265) and the log has its line (:267)
+    # its start is complete once runtime.json names the worker (worker.ts:488-496) and the log has its line (:498-503)
     $ready = Wait-Until {
       $h = Get-Helper
       $rt = Read-Runtime
-      if ($h.Supervisors.Count -eq 1 -and $h.Workers.Count -eq 1 -and $null -ne $rt -and $rt.workerPid -eq $h.Workers[0].Pid -and
+      if ((Test-Running $h) -and $null -ne $rt -and $rt.workerPid -eq $h.Workers[0].Pid -and
         (Get-LogCount 'helper: started') -ge 1) { $true }
     } -Seconds 10
     if (-not $ready) { Note 'its start did not complete within 10 s more' }
 
-    # exactly one supervisor and one worker, the worker its child (main.ts:84-142)
+    # exactly one supervisor and its worker, and from 0.3.0 its print process (main.ts:106-192)
     $h = Get-Helper
     Save-Processes 'check2'
-    Expect ($h.Supervisors.Count -eq 1 -and $h.Workers.Count -eq 1 -and $h.Others.Count -eq 0) "exactly one supervisor and one worker: $(Format-Helper $h)"
+    Expect (Test-Whole $h) "exactly $WholeText`: $(Format-Helper $h)"
     if ($h.Supervisors.Count -eq 1 -and $h.Workers.Count -eq 1) {
       $sup = $h.Supervisors[0]
       $wk = $h.Workers[0]
       $S.Supervisor = $sup
       $S.Worker = $wk
       $S.FirstSupervisorPid = $sup.Pid
-      Expect ($wk.ParentPid -eq $sup.Pid) "the worker $($wk.Pid) is the supervisor's ($($sup.Pid)) child (main.ts:119-126)"
+      Expect ($wk.ParentPid -eq $sup.Pid) "the worker $($wk.Pid) is the supervisor's ($($sup.Pid)) child (main.ts:154-167)"
       Expect ($sup.Path -eq $Exe -and $wk.Path -eq $Exe) "both run $Exe"
       Expect ((Get-ArgumentsOf $sup.CommandLine) -eq '') "the supervisor has no arguments, as the Run key starts it: $($sup.CommandLine)"
       Expect ((Get-ArgumentsOf $wk.CommandLine) -eq '--worker') "the worker's arguments: $(Get-ArgumentsOf $wk.CommandLine)"
+      if ($HasPrint -and $h.Prints.Count -eq 1) {
+        $pr = $h.Prints[0]
+        $S.Print = $pr
+        Expect ($pr.ParentPid -eq $sup.Pid) "the print process $($pr.Pid) is the supervisor's child too (main.ts:170-190)"
+        Expect ($pr.Path -eq $Exe) "it runs $Exe as well"
+        Expect ((Get-ArgumentsOf $pr.CommandLine) -eq '--print-worker') "the print process's arguments: $(Get-ArgumentsOf $pr.CommandLine)"
+      }
     }
+    if (-not $HasPrint) { Note "no print process expected: $ExpectedVersion is older than $PrintSince" }
 
-    # runtime.json: the instance, for a second start's --open and the installer's --quit (main.ts:103-111)
+    # runtime.json: the instance, for a second start's --open and the installer's --quit (main.ts:125-133)
     $rt = Read-Runtime
     Expect ($null -ne $rt) "runtime.json is there: $RuntimeFile"
     if ($null -ne $rt) {
@@ -725,42 +1064,85 @@ try {
       Expect (-not [string]::IsNullOrEmpty([string]$rt.quitSecret) -and -not [string]::IsNullOrEmpty([string]$rt.lockSecret)) 'runtime.json holds the quit secrets of the page and of the supervisor (not shown)'
     }
 
-    # what the page says (worker.ts:211-225)
+    # what the page says (worker.ts:370-387)
     $status = Get-Status -Base $PageUrl
     Expect ($null -ne $status) 'GET /api/status answers 200'
     if ($null -ne $status) {
       Expect ($status.app -eq 'alty-helper' -and $status.version -eq $ExpectedVersion) "it is $($status.app) $($status.version)"
-      Expect ($status.link.kind -eq 'unpaired' -and $null -eq $status.pairing) "it says unpaired (link $($status.link.kind), pairing $(if ($null -eq $status.pairing) { 'none' } else { 'set' }); worker.ts:103-104)"
+      Expect ($status.link.kind -eq 'unpaired' -and $null -eq $status.pairing) "it says unpaired (link $($status.link.kind), pairing $(if ($null -eq $status.pairing) { 'none' } else { 'set' }); worker.ts:130-131)"
       Expect ($status.apiUrl -eq $ApiUrl) "its server is $($status.apiUrl) (store.ts:6, :63)"
       Expect ($status.update.status -eq 'current') "its update status is '$($status.update.status)': a release key is compiled in ('off' would mean none; update.ts:58)"
-      Expect ($status.language -eq 'hy' -and $status.logs -eq $LogsDir) "its page speaks $($status.language) (worker.ts:214) and names its logs $($status.logs)"
+      Expect ($status.language -eq 'hy' -and $status.logs -eq $LogsDir) "its page speaks $($status.language) (worker.ts:374) and names its logs $($status.logs)"
       Expect ($null -eq $status.lastError.link -and $null -eq $status.lastError.pairing) 'no error since its start'
     }
 
-    # the page itself: in Armenian, with its CSP, carrying the token a change needs (server.ts:97-110)
+    # the page itself: in Armenian, with its CSP, carrying the token a change needs (server.ts:119-132)
     $page = Invoke-Page -Base $PageUrl
     $html = Get-Body $page
     if ($html -match 'const CSRF = "([A-Za-z0-9_-]+)";') { Add-Secret $Matches[1] }
     Expect ($null -ne $page -and $page.StatusCode -eq 200) "GET / answers $(if ($null -ne $page) { $page.StatusCode } else { 'nothing' })"
     $csp = Get-Header $page 'Content-Security-Policy'
     Expect ($csp.StartsWith("default-src 'none'")) "its Content-Security-Policy: $csp"
-    Expect ($html.Contains("<title>$HyTitle</title>")) "it is in Armenian: <title>$HyTitle</title> (page.ts:130, i18n/hy.ts:8)"
+    Expect ($html.Contains("<title>$HyTitle</title>")) "it is in Armenian: <title>$HyTitle</title> (page.ts:246, i18n/hy.ts:10)"
     Save-Text 'page.html' $html
-    Headline "page at $PageUrl after $after s; supervisor $(if ($S.Supervisor) { $S.Supervisor.Pid }) and worker $(if ($S.Worker) { $S.Worker.Pid }); unpaired; server $ApiUrl; release key compiled in"
+
+    $printSaid = ''
+    if ($HasPrint) {
+      # The print process, unpaired, reads Windows' printers at once, for the page (print/worker.ts:508-509),
+      # through its own Windows PowerShell, which first compiles the C# over winspool.drv and is given a minute for
+      # it (print/windows.ts:403, :570-616); the page shows what it says of itself (worker.ts:224-246)
+      $read = Wait-Until {
+        $x = Read-Status
+        if ($null -ne $x -and $null -ne $x.print -and ($null -ne $x.print.printers -or $null -ne $x.print.printersProblem)) { $true }
+      } -Seconds 75 -EveryMs 500
+      $readAfter = [math]::Round(([DateTime]::UtcNow - $S.InstalledAt).TotalSeconds, 1)
+      if (-not $read) { Note "the print process said nothing of Windows' printers within 75 s" }
+      $status = Get-Status
+      $p = if ($null -ne $status) { $status.print } else { $null }
+      Expect ($null -ne $p) "GET /api/status has the print process's part (status/types.ts:52-74)"
+      if ($null -ne $p) {
+        Expect ($p.lane -eq $true -and $p.installed -eq $ExpectedVersion) "the installed program starts a print process (lane $($p.lane), installed $($p.installed))"
+        Expect ($p.running -eq $true -and $p.version -eq $ExpectedVersion -and $p.link -eq 'unpaired') "the print process runs $($p.version), its link $($p.link) (print/status.ts:120-121)"
+        Expect ($null -ne $p.printers -and $null -eq $p.printersProblem) "it read Windows' printers through its PowerShell, $readAfter s after the install: $(Format-Printers $p.printers)$(if ($null -ne $p.printersProblem) { "; problem: $($p.printersProblem)" })"
+        Expect ($p.route.known -eq $false -and $null -eq $p.last) 'unpaired, it asked the server nothing and printed nothing (print/worker.ts:427-454: no hello without a pairing)'
+        $printSaid = Format-Printers $p.printers
+      }
+      $ps = Read-PrintStatus
+      Expect ($null -ne $ps -and $null -ne $S.Print -and $ps.pid -eq $S.Print.Pid -and $null -eq $ps.deviceId) "print-status.json is the print process's own: pid $(if ($null -ne $ps) { $ps.pid } else { 'none' }), no pairing (print/worker.ts:162-179)"
+
+      # its Windows PowerShell: one, its child, by its full path, with the constant script (print/windows.ts:386-400)
+      $shells = @(Get-SpoolerShells)
+      Expect ($shells.Count -eq 1 -and $null -ne $S.Print -and $shells[0].ParentPid -eq $S.Print.Pid) "one Windows PowerShell for the spooler, the print process's child: $(Format-Shells $shells)"
+      if ($shells.Count -ge 1) {
+        $sh = $shells[0]
+        $S.SpoolerCommand = $sh.CommandLine
+        $shellArgs = Get-ArgumentsOf $sh.CommandLine
+        Expect ($sh.Path -ieq $SpoolerExe) "it is Windows PowerShell by its full path: $($sh.Path) (fiscal/powershell.ts:40-49)"
+        Expect ($shellArgs.StartsWith('-NoLogo -NoProfile -NonInteractive -Command ')) "with the constant script: $($shellArgs.Substring(0, [Math]::Min(56, $shellArgs.Length))) ... ($($sh.CommandLine.Length) characters)"
+      }
+
+      # what its log says (print/worker.ts:524-529; print/windows.ts:614)
+      $printEntries = @(Get-LogEntries $PrintLogFile)
+      $prStarted = @($printEntries | Where-Object { $_.Message -eq 'print: started' })
+      $shellStarted = @($printEntries | Where-Object { $_.Message -eq 'print: Windows PowerShell started for the spooler' })
+      Expect ($prStarted.Count -eq 1) "print.log has the print process's start: $(if ($prStarted.Count) { $prStarted[0].Line } else { 'no such line' })"
+      Expect ($shellStarted.Count -eq 1) "and its PowerShell's, compiled and ready: $(if ($shellStarted.Count) { $shellStarted[0].Line } else { 'no such line' })"
+    }
+    Headline "page at $PageUrl after $after s; supervisor $(if ($S.Supervisor) { $S.Supervisor.Pid }), worker $(if ($S.Worker) { $S.Worker.Pid })$(if ($HasPrint) { " and print process $(if ($S.Print) { $S.Print.Pid }), its PowerShell up and Windows' printers read: $printSaid" }); unpaired; server $ApiUrl; release key compiled in"
   }
 
   # -------------------------------------------------------------------------------------------------------
   Invoke-Check '3' {
     $page = Invoke-Page
     $html = Get-Body $page
-    if (-not ($html -match 'const CSRF = "([A-Za-z0-9_-]+)";')) { throw "the page carries no token (page.ts:191): $(Format-Answer $page)" }
+    if (-not ($html -match 'const CSRF = "([A-Za-z0-9_-]+)";')) { throw "the page carries no token (page.ts:348): $(Format-Answer $page)" }
     $csrf = $Matches[1]
     Add-Secret $csrf
     $origin = $S.Url.TrimEnd('/')   # the page's own origin, which a browser sends with its POST
     $refusedBefore = Get-LogCount 'helper: pairing refused'
 
-    # the page's guards (server.ts:92-95, :128-135), each tried with an empty body, which could not reach the
-    # server even if a guard let it through (server.ts:145-148)
+    # the page's guards (server.ts:114-117, :150-157), each tried with an empty body, which could not reach the
+    # server even if a guard let it through (server.ts:167-171)
     $noToken = Invoke-Page -Path 'api/pair' -Method 'POST' -Headers @{ Origin = $origin } -Body '{}'
     Expect ($null -ne $noToken -and $noToken.StatusCode -eq 403) "a change without the page's token is refused: $(Format-Answer $noToken)"
     $otherSite = Invoke-Page -Path 'api/pair' -Method 'POST' -Headers @{ 'x-helper-csrf' = $csrf; Origin = 'https://example.com' } -Body '{}'
@@ -768,18 +1150,18 @@ try {
     $otherHost = Send-RawRequest "example.com:$(([Uri]$S.Url).Port)"
     Expect ($otherHost -match '^HTTP/1\.1 421 ') "a request under another Host (DNS rebinding) is refused: $otherHost"
 
-    # the pairing as the page's script sends it (page.ts:207-209, :275-281): POST /api/pair, {"code": ...},
-    # its token and its origin. The helper claims it at the server (worker.ts:181-207, api.ts:189-191)
+    # the pairing as the page's script sends it (page.ts:366-368, :583-589): POST /api/pair, {"code": ...},
+    # its token and its origin. The helper claims it at the server (worker.ts:339-368, api.ts:249-252)
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     $answer = Invoke-Page -Path 'api/pair' -Method 'POST' -Headers @{ 'x-helper-csrf' = $csrf; Origin = $origin } -Body (ConvertTo-Json -InputObject @{ code = $WrongCode } -Compress) -TimeoutSec 60
     $took = [math]::Round($clock.Elapsed.TotalSeconds, 1)
     $json = $null
     try { $json = (Get-Body $answer) | ConvertFrom-Json } catch { $json = $null }
     # the server's 404 registration_invalid comes back as the page's 400 {ok:false, error:'registration_invalid'}
-    # (api.ts:163-171, worker.ts:202-206, server.ts:150-151); a network or TLS failure would say 'network'
+    # (api.ts:223-231, worker.ts:362-366, server.ts:172-173); a network or TLS failure would say 'network'
     Expect ($null -ne $answer -and $answer.StatusCode -eq 400 -and $null -ne $json -and $json.ok -eq $false -and $json.error -eq 'registration_invalid') "the page answered $(Format-Answer $answer) after $took s"
 
-    # why, as the page's details say it (worker.ts:204; log.ts:24-42): the server's own words and code
+    # why, as the page's details say it (worker.ts:364; log.ts:31-55): the server's own words and code
     $status = Get-Status
     $note = $null
     if ($null -ne $status -and $null -ne $status.lastError) { $note = $status.lastError.pairing }
@@ -787,7 +1169,7 @@ try {
     Expect ($reason.StartsWith('HelperApiError: ') -and $reason.EndsWith('[registration_invalid]')) "the reason is the server's answer, not a network or TLS error: $reason"
     $refused = @(Get-LogEntries | Where-Object { $_.Message -eq 'helper: pairing refused' })
     $last = if ($refused.Count -gt 0) { $refused[-1].Line } else { '(no line)' }
-    Expect ($refused.Count -eq $refusedBefore + 1 -and $last.Contains('[registration_invalid]')) "the log says it (worker.ts:203): $last"
+    Expect ($refused.Count -eq $refusedBefore + 1 -and $last.Contains('[registration_invalid]')) "the log says it (worker.ts:363): $last"
     Expect ($null -ne $status -and $status.link.kind -eq 'unpaired' -and $null -eq $status.pairing) 'still unpaired'
     if ($script:Current.Failures.Count -gt 0) {
       Note "the log's last lines:"
@@ -797,16 +1179,100 @@ try {
   }
 
   # -------------------------------------------------------------------------------------------------------
-  Invoke-Check '4' {
+  Invoke-Check '4' -Since $PrintSince {
     $h = Get-Helper
-    if ($h.Supervisors.Count -ne 1 -or $h.Workers.Count -ne 1) { throw "expected one supervisor and one worker, found: $(Format-Helper $h)" }
+    if (-not (Test-Running $h)) { throw "expected $WholeText, found: $(Format-Helper $h)" }
+    $laneShells = @(Get-SpoolerShells | Where-Object { $_.ParentPid -eq $h.Prints[0].Pid })
+    $laneCommand = if ($laneShells.Count -ge 1) { $laneShells[0].CommandLine } else { [string]$S.SpoolerCommand }
+    if ($laneShells.Count -eq 0) { Note "the print process has no PowerShell now: its command line is check 2's" }
+
+    # a) Windows' printers, from a process of its own beside the running helper (main.ts:279-293, print/check.ts:53-61):
+    #    its PowerShell starts and compiles the C#, EnumPrinters and GetDefaultPrinter answer (print/windows.ts:167-215)
+    $list = Invoke-PrintCheck -Label 'list'
+    $listed = @($list.Lines | Where-Object { $_.check -eq 'printers' })
+    Expect ($list.Ended -and $list.ExitCode -eq 0) "$($list.Command) ended after $($list.Seconds) s with exit code $(if ($list.Ended) { $list.ExitCode } else { 'none: still running' }) (0: it listed them)"
+    Expect ($list.Lines.Count -eq 1 -and $listed.Count -eq 1 -and $listed[0].ok -eq $true) "its one line on its standard output: $(Format-Said $list)"
+    if ($list.Stderr.Trim() -ne '') { Note "its standard error: $($list.Stderr.Trim())" }
+    $windows = @(Get-WindowsPrinters)
+    Note "Windows' own list (Win32_Printer): $(Format-WindowsPrinters $windows)"
+    if ($listed.Count -eq 1) {
+      $differ = @(Compare-Printers $listed[0].printers $windows)
+      Expect ($differ.Count -eq 0) "it lists the printers Windows lists, each with Windows' driver, port and default$(if ($differ.Count) { ': ' + ($differ -join '; ') })"
+    }
+    Test-CheckShells $list $laneCommand
+
+    # b) a printer Windows does not have: OpenPrinter refuses it, and nothing is sent (print/windows.ts:217-237,
+    #    :721-734; jobs/print.ts:431-450)
+    $missing = Invoke-PrintCheck -Label 'missing-printer' -Printer $NoPrinter
+    $refused = @($missing.Lines | Where-Object { $_.check -eq 'print' })
+    Expect ($missing.Ended -and $missing.ExitCode -eq 1) "$($missing.Command) ended after $($missing.Seconds) s with exit code $(if ($missing.Ended) { $missing.ExitCode } else { 'none: still running' }) (1: not printed)"
+    Expect ($refused.Count -eq 1 -and $refused[0].ok -eq $false -and $refused[0].sent -eq $false -and $refused[0].problem -eq 'printer_missing') "Windows has no such printer, and nothing was sent: $(Format-Said $missing)"
+    Test-CheckShells $missing $laneCommand $NoPrinter
+
+    # c) a printer this test adds, Windows' own text driver on a port that is a file: the print through the very
+    #    code a ticket takes (print/check.ts:62-98): the printer's state (GetPrinter), the bytes as one RAW job
+    #    (StartDocPrinter, WritePrinter, EndDocPrinter), a look every quarter second until it leaves Windows' queue
+    #    (GetJob) (print/windows.ts:239-309; jobs/print.ts:411-494)
+    $driver = Add-RawPrinter
+    Note "added the printer '$RawPrinter': Windows' driver '$driver' on the port $RawPort"
+    $printed = @()
+    $raw = $null
+    try {
+      $since = [DateTime]::UtcNow
+      $raw = Invoke-PrintCheck -Label 'print' -Printer $RawPrinter
+      $listedRaw = @($raw.Lines | Where-Object { $_.check -eq 'printers' } | ForEach-Object { @($_.printers) } | Where-Object { [string]$_.name -ceq $RawPrinter })
+      Expect ($listedRaw.Count -eq 1 -and $listedRaw[0].driver -eq $driver -and $listedRaw[0].port -eq $RawPort -and $listedRaw[0].state -eq 'ready' -and $listedRaw[0].jobs -eq 0) "it lists the printer just added: $(Format-Printers $listedRaw)"
+      $printed = @($raw.Lines | Where-Object { $_.check -eq 'print' })
+      Expect ($raw.Ended -and $raw.ExitCode -eq 0) "$($raw.Command) ended after $($raw.Seconds) s with exit code $(if ($raw.Ended) { $raw.ExitCode } else { 'none: still running' }) (0: printed)"
+      Expect ($printed.Count -eq 1 -and $printed[0].ok -eq $true -and $printed[0].sent -eq $true -and $printed[0].outcome -eq 'printed' -and [long]$printed[0].spoolJobId -gt 0 -and $printed[0].bytes -eq 63) "Windows took the RAW print and it left the queue: $(Format-Said $raw)"
+      if ($raw.Stderr.Trim() -ne '') { Note "its standard error: $($raw.Stderr.Trim())" }
+
+      # the bytes that reached the port, exactly the check's
+      $null = Wait-Until { if ((Test-Path -LiteralPath $RawPort) -and (Get-Item -LiteralPath $RawPort).Length -ge 63) { $true } } -Seconds 10
+      [byte[]]$bytes = [byte[]]::new(0)
+      if (Test-Path -LiteralPath $RawPort) { $bytes = [System.IO.File]::ReadAllBytes($RawPort) }
+      if ($bytes.Length -gt 0) { [System.IO.File]::WriteAllBytes((Join-Path $Evidence 'print-check.prn'), $bytes) }
+      $landed = Test-CheckBytes $bytes $since
+      Expect $landed.Ok "the port's file holds exactly the check's bytes, as written RAW: $($landed.Text)"
+      $queued = @(Get-PrintJob -PrinterName $RawPrinter -ErrorAction SilentlyContinue)
+      Expect ($queued.Count -eq 0) "nothing is left in Windows' queue for '$RawPrinter': $($queued.Count) prints"
+      Test-CheckShells $raw $laneCommand $RawPrinter
+
+      # d) the running print process reads Windows' printers again every 15 s (print/worker.ts:491-497): it lists the
+      #    new printer too, for the page
+      $seen = Wait-Until {
+        $x = Read-Status
+        if ($null -ne $x -and $null -ne $x.print -and @($x.print.printers | Where-Object { [string]$_.name -ceq $RawPrinter }).Count -eq 1) { $true }
+      } -Seconds 40 -EveryMs 1000
+      $status = Get-Status
+      $byLane = @(if ($null -ne $status -and $null -ne $status.print) { $status.print.printers | Where-Object { [string]$_.name -ceq $RawPrinter } })
+      Expect ($seen -eq $true -and $byLane.Count -eq 1) "the running print process lists it too, within 40 s: $(Format-Printers $byLane)"
+    } finally {
+      Remove-RawPrinter
+    }
+
+    # beside the running helper, which goes on as it was
+    $after = Get-Helper
+    Save-Processes 'check4'
+    Expect ((Test-Whole $after) -and $after.Supervisors[0].Pid -eq $h.Supervisors[0].Pid -and $after.Workers[0].Pid -eq $h.Workers[0].Pid -and $after.Prints[0].Pid -eq $h.Prints[0].Pid) "the running helper was not touched: $(Format-Helper $after)"
+    $checkLines = Get-LogCount 'print: check' $PrintLogFile
+    Note "print.log has the checks' $checkLines 'print: check' lines (print/check.ts:49-52)"
+    $job = if ($printed.Count -eq 1) { "job $($printed[0].spoolJobId), out of the queue in $($printed[0].ms) ms" } else { 'no print' }
+    Headline "--print-check listed $(if ($listed.Count -eq 1) { @($listed[0].printers).Count } else { 'no' }) printers as Windows does ($($list.Seconds) s with PowerShell's start), refused '$NoPrinter' with nothing sent, and printed 63 bytes RAW to '$RawPrinter' ($job), unchanged in the file; the print process lists it too"
+  }
+
+  # -------------------------------------------------------------------------------------------------------
+  Invoke-Check '5' {
+    $h = Get-Helper
+    if (-not (Test-Running $h)) { throw "expected $WholeText, found: $(Format-Helper $h)" }
     $sup = $h.Supervisors[0]
     $old = $h.Workers[0]
+    $pr = if ($HasPrint) { $h.Prints[0] } else { $null }
     $restartsBefore = Get-LogCount 'supervisor: the helper stopped by itself; starting it again'
     $startsBefore = Get-LogCount 'helper: started'
 
     # ended from outside, as Task Manager would: the supervisor starts it again after 0.5 to 1 s
-    # (supervisor.ts:61-80, backoff.ts:20-21). The same TerminateProcess as Stop-Process -Force, through a
+    # (supervisor.ts:74-108, backoff.ts:20-21). The same TerminateProcess as Stop-Process -Force, through a
     # process object closed as soon as the worker has gone (Close-Process)
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     $victim = [System.Diagnostics.Process]::GetProcessById($old.Pid)
@@ -825,7 +1291,7 @@ try {
     if ($null -eq $new) { return }
     Expect ($new.ParentPid -eq $sup.Pid) "it is the same supervisor's ($($sup.Pid)) child"
 
-    # its page again, where runtime.json says (worker.ts:246-265: 47100, else any free port)
+    # its page again, where runtime.json says (worker.ts:474-496: 47100, else any free port)
     $rt = Wait-Until { $x = Read-Runtime; if ($null -ne $x -and $x.workerPid -eq $new.Pid -and $x.url) { $x } } -Seconds 15
     Expect ($null -ne $rt) 'runtime.json names the new worker'
     if ($null -ne $rt) { $S.Url = [string]$rt.url }
@@ -835,33 +1301,101 @@ try {
     $logged = Wait-Until { if ((Get-LogCount 'helper: started') -ge $startsBefore + 1) { $true } } -Seconds 5
 
     $after = Get-Helper
-    Save-Processes 'check4'
-    Expect ($after.Supervisors.Count -eq 1 -and $after.Supervisors[0].Pid -eq $sup.Pid -and $after.Workers.Count -eq 1 -and $after.Others.Count -eq 0) "the same supervisor and one worker: $(Format-Helper $after)"
-    Expect ((Get-LogCount 'supervisor: the helper stopped by itself; starting it again') -eq $restartsBefore + 1) "the supervisor logged the restart (supervisor.ts:76)"
-    Expect ($logged -eq $true) "the new worker logged its start (worker.ts:267)"
+    Save-Processes 'check5'
+    Expect ($after.Supervisors.Count -eq 1 -and $after.Supervisors[0].Pid -eq $sup.Pid -and $after.Workers.Count -eq 1 -and $after.Prints.Count -eq $PrintCount -and $after.Others.Count -eq 0) "the same supervisor and one worker$(if ($HasPrint) { ' and one print process' }): $(Format-Helper $after)"
+    if ($HasPrint) {
+      # each child is kept on its own: the worker's end never restarts the print process (supervisor.ts:59-66)
+      Expect ($after.Prints.Count -eq 1 -and $after.Prints[0].Pid -eq $pr.Pid -and $after.Prints[0].Started -eq $pr.Started) "the print process $($pr.Pid) was not touched"
+    }
+    $restarts = @(Get-LogEntries | Where-Object { $_.Message -eq 'supervisor: the helper stopped by itself; starting it again' })
+    Expect ($restarts.Count -eq $restartsBefore + 1) "the supervisor logged the restart (supervisor.ts:102-106)"
+    if ($HasPrint -and $restarts.Count -ge 1) {
+      Expect ($null -ne $restarts[-1].Data -and $restarts[-1].Data.process -eq 'worker') "for the worker: $($restarts[-1].Line)"
+    }
+    Expect ($logged -eq $true) "the new worker logged its start (worker.ts:498-503)"
     $status = Get-Status
     Expect ($null -ne $status -and $status.link.kind -eq 'unpaired') 'it is still unpaired'
     $S.Supervisor = $sup
     $S.Worker = $new
-    Headline "worker $($old.Pid) ended; worker $($new.Pid) after $took s under the same supervisor $($sup.Pid); the page answers again"
+    Headline "worker $($old.Pid) ended; worker $($new.Pid) after $took s under the same supervisor $($sup.Pid)$(if ($HasPrint) { ", print process $($pr.Pid) untouched" }); the page answers again"
   }
 
   # -------------------------------------------------------------------------------------------------------
-  Invoke-Check '5' {
+  Invoke-Check '6' -Since $PrintSince {
     $h = Get-Helper
-    if ($h.Supervisors.Count -ne 1 -or $h.Workers.Count -ne 1) { throw "expected one supervisor and one worker, found: $(Format-Helper $h)" }
+    if (-not (Test-Running $h)) { throw "expected $WholeText, found: $(Format-Helper $h)" }
     $sup = $h.Supervisors[0]
     $wk = $h.Workers[0]
+    $old = $h.Prints[0]
+    $oldShells = @(Get-SpoolerShells | Where-Object { $_.ParentPid -eq $old.Pid })
+    $restartsBefore = Get-LogCount 'supervisor: the helper stopped by itself; starting it again'
+    $startsBefore = Get-LogCount 'print: started' $PrintLogFile
+    $shellsBefore = Get-LogCount 'print: Windows PowerShell started for the spooler' $PrintLogFile
+
+    # ended from outside, as Task Manager's End task would: the supervisor keeps each child on its own and starts
+    # this one again too, after 0.5 to 1 s (supervisor.ts:59-108, backoff.ts:20-21; main.ts:170-190)
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
+    $victim = [System.Diagnostics.Process]::GetProcessById($old.Pid)
+    try {
+      $victim.Kill()
+      $null = $victim.WaitForExit(5000)
+    } finally {
+      Close-Process $victim
+    }
+    $new = Wait-Until {
+      $fresh = @((Get-Helper).Prints | Where-Object { $_.Pid -ne $old.Pid -or $_.Started -ne $old.Started })
+      if ($fresh.Count -ge 1) { $fresh[0] }
+    } -Seconds 5 -EveryMs 100
+    $took = [math]::Round($clock.Elapsed.TotalSeconds, 1)
+    Expect ($null -ne $new) "a new print process within 5 s of ending print process $($old.Pid): $(if ($null -ne $new) { "$($new.Pid), after $took s" } else { 'none' })"
+    if ($null -eq $new) { return }
+    Expect ($new.ParentPid -eq $sup.Pid -and (Get-ArgumentsOf $new.CommandLine) -eq '--print-worker') "it is the same supervisor's ($($sup.Pid)) child, $(Get-ArgumentsOf $new.CommandLine)"
+    $S.Print = $new
+
+    # the ended one's PowerShell ends with it: its input closed (print/windows.ts:351-373); the new one starts its own
+    $oldGone = Wait-Until { if (@(Get-SpoolerShells | Where-Object { $_.ParentPid -eq $old.Pid }).Count -eq 0) { $true } } -Seconds 10
+    Expect ($oldGone -eq $true -and $oldShells.Count -eq 1) "the ended print process's PowerShell ($(Format-Shells $oldShells)) ended too: nothing kept it"
+    $shell = Wait-Until {
+      $x = @(Get-SpoolerShells)
+      if ($x.Count -eq 1 -and $x[0].ParentPid -eq $new.Pid -and (Get-LogCount 'print: Windows PowerShell started for the spooler' $PrintLogFile) -ge $shellsBefore + 1) { $x[0] }
+    } -Seconds 75 -EveryMs 500
+    Expect ($null -ne $shell) "the new print process started its own PowerShell, and only it runs: $(Format-Shells (Get-SpoolerShells))"
+    if ($null -ne $shell) { $S.SpoolerCommand = $shell.CommandLine }
+    $logged = Wait-Until { if ((Get-LogCount 'print: started' $PrintLogFile) -ge $startsBefore + 1) { $true } } -Seconds 5
+    Expect ($logged -eq $true) "the new print process logged its start (print/worker.ts:524-529)"
+    $ps = Wait-Until { $x = Read-PrintStatus; if ($null -ne $x -and $x.pid -eq $new.Pid -and $null -ne $x.printers) { $x } } -Seconds 20
+    Expect ($null -ne $ps) "print-status.json is the new print process's ($($new.Pid)), Windows' printers read"
+    $status = Get-Status
+    Expect ($null -ne $status -and $null -ne $status.print -and $status.print.running -eq $true -and $status.link.kind -eq 'unpaired') "the page says the print process runs (running: $(if ($null -ne $status -and $null -ne $status.print) { $status.print.running })); still unpaired"
+
+    $restarts = @(Get-LogEntries | Where-Object { $_.Message -eq 'supervisor: the helper stopped by itself; starting it again' })
+    $added = @($restarts | Select-Object -Skip $restartsBefore)
+    Expect ($added.Count -eq 1 -and $null -ne $added[0].Data -and $added[0].Data.process -eq 'print') "the supervisor logged the restart, for the print process (supervisor.ts:102-106): $(if ($added.Count) { ($added | ForEach-Object { $_.Line }) -join ' / ' } else { 'no line' })"
+    $after = Get-Helper
+    Save-Processes 'check6'
+    Expect ($after.Supervisors.Count -eq 1 -and $after.Supervisors[0].Pid -eq $sup.Pid -and $after.Workers.Count -eq 1 -and $after.Workers[0].Pid -eq $wk.Pid -and $after.Workers[0].Started -eq $wk.Started -and
+      $after.Prints.Count -eq 1 -and $after.Prints[0].Pid -eq $new.Pid -and $after.Others.Count -eq 0) "the same supervisor and worker (untouched), and the new print process: $(Format-Helper $after)"
+    Expect (Test-Page) "the page still answers at $($S.Url)"
+    Headline "print process $($old.Pid) ended; print process $($new.Pid) after $took s under the same supervisor $($sup.Pid), with a PowerShell of its own; the old PowerShell ended; worker $($wk.Pid) untouched"
+  }
+
+  # -------------------------------------------------------------------------------------------------------
+  Invoke-Check '7' {
+    $h = Get-Helper
+    if (-not (Test-Running $h)) { throw "expected $WholeText, found: $(Format-Helper $h)" }
+    $sup = $h.Supervisors[0]
+    $wk = $h.Workers[0]
+    $pr = if ($HasPrint) { $h.Prints[0] } else { $null }
     $leftBefore = Get-LogCount 'supervisor: already running here'
 
     # The shortcut's own command, the program with --open (.nsi:93), twice in a row. Started from this
     # folder, not the shortcut's (the program folder): the browser --open starts would keep that one as
-    # its working folder, and so stop check 8's uninstall from removing the program folder.
+    # its working folder, and so stop check 10's uninstall from removing the program folder.
     $target = $Exe
     $arguments = '--open'
     if ($null -ne $S.Link -and $S.Link.TargetPath) { $target = $S.Link.TargetPath; $arguments = $S.Link.Arguments }
     # Each start's handle is closed once its exit code is read (Close-Process): alty-helper.exe stays
-    # replaceable for check 6's reinstall.
+    # replaceable for check 8's reinstall.
     $starts = [System.Collections.Generic.List[object]]::new()
     try {
       foreach ($n in 1, 2) {
@@ -873,7 +1407,7 @@ try {
         $starts.Add($p)
         $null = $p.Handle
       }
-      # each finds the supervisor's pipe held (lock.ts:106-132), opens the page and leaves with 0 (main.ts:97-101)
+      # each finds the supervisor's pipe held (lock.ts:107-133), opens the page and leaves with 0 (main.ts:119-124)
       foreach ($p in $starts) {
         $startId = $p.Id
         $ended = $p.WaitForExit(20000)
@@ -885,24 +1419,29 @@ try {
       foreach ($p in $starts) { Close-Process $p }
     }
     $left = Wait-Until { $c = Get-LogCount 'supervisor: already running here'; if ($c -ge $leftBefore + 2) { $c } } -Seconds 10
-    Expect ($left -eq $leftBefore + 2) "the log says 'supervisor: already running here' twice more (main.ts:100)"
+    Expect ($left -eq $leftBefore + 2) "the log says 'supervisor: already running here' twice more (main.ts:122)"
 
-    # and for 5 s after, still the same one supervisor and one worker
-    $steady = Watch-Steady -Supervisor $sup -Worker $wk -Seconds 5
-    Save-Processes 'check5'
+    # and for 5 s after, still the same processes and nothing else
+    $steady = Watch-Steady -Supervisor $sup -Worker $wk -Print $pr -Seconds 5
+    Save-Processes 'check7'
     Expect $steady.Ok $steady.Text
     Expect (Test-Page) "the page still answers at $($S.Url)"
     Headline "two starts left at once with 0; $($steady.Text)"
   }
 
   # -------------------------------------------------------------------------------------------------------
-  Invoke-Check '6' {
+  Invoke-Check '8' {
     $h = Get-Helper
-    if ($h.Supervisors.Count -ne 1 -or $h.Workers.Count -ne 1) { throw "expected one supervisor and one worker, found: $(Format-Helper $h)" }
+    if (-not (Test-Running $h)) { throw "expected $WholeText, found: $(Format-Helper $h)" }
     $oldSup = $h.Supervisors[0]
     $oldWk = $h.Workers[0]
+    $oldPr = if ($HasPrint) { $h.Prints[0] } else { $null }
+    $oldShells = @(Get-SpoolerShells)
     $before = @(Get-LogEntries)
     $firstLine = if ($before.Count -gt 0) { $before[0].Line } else { '' }
+    $printBefore = @(Get-LogEntries $PrintLogFile)
+    $printFirstLine = if ($printBefore.Count -gt 0) { $printBefore[0].Line } else { '' }
+    $shellsBefore = @($printBefore | Where-Object { $_.Message -eq 'print: Windows PowerShell started for the spooler' }).Count
 
     # the installer finds the program and asks it to stop (--quit) before it copies (.nsi:82-83, :109-119);
     # nothing of the test's may still hold an ended alty-helper.exe process then (Close-Process)
@@ -921,34 +1460,53 @@ try {
 
     $gone = Wait-Until {
       $alive = @(Get-HelperProcesses | Where-Object {
-          ($_.Pid -eq $oldSup.Pid -and $_.Started -eq $oldSup.Started) -or ($_.Pid -eq $oldWk.Pid -and $_.Started -eq $oldWk.Started) })
+          ($_.Pid -eq $oldSup.Pid -and $_.Started -eq $oldSup.Started) -or ($_.Pid -eq $oldWk.Pid -and $_.Started -eq $oldWk.Started) -or
+          ($null -ne $oldPr -and $_.Pid -eq $oldPr.Pid -and $_.Started -eq $oldPr.Started) })
       if ($alive.Count -eq 0) { $true }
     } -Seconds 10
-    Expect ($gone -eq $true) "the old supervisor $($oldSup.Pid) and worker $($oldWk.Pid) ended"
+    Expect ($gone -eq $true) "the old supervisor $($oldSup.Pid) and worker $($oldWk.Pid)$(if ($null -ne $oldPr) { " and print process $($oldPr.Pid)" }) ended"
+    if ($HasPrint) {
+      $shellGone = Wait-Until {
+        $now = @(Get-SpoolerShells)
+        if (@($oldShells | Where-Object { $o = $_; @($now | Where-Object { $_.Pid -eq $o.Pid -and $_.Started -eq $o.Started }).Count -gt 0 }).Count -eq 0) { $true }
+      } -Seconds 10
+      Expect ($shellGone -eq $true) "and the print process's PowerShell ($(Format-Shells $oldShells))"
+    }
 
     # silent, it starts the helper again at its end (.nsi:124-127)
     $back = Wait-Until {
       $x = Get-Helper
       $rt = Read-Runtime
-      if ($x.Supervisors.Count -eq 1 -and $x.Workers.Count -eq 1 -and $x.Others.Count -eq 0 -and $x.Supervisors[0].Pid -ne $oldSup.Pid -and
-        $x.Workers[0].ParentPid -eq $x.Supervisors[0].Pid -and $null -ne $rt -and $rt.workerPid -eq $x.Workers[0].Pid -and $rt.url) {
+      if ((Test-Whole $x) -and $x.Supervisors[0].Pid -ne $oldSup.Pid -and
+        $x.Workers[0].ParentPid -eq $x.Supervisors[0].Pid -and @($x.Prints | Where-Object { $_.ParentPid -ne $x.Supervisors[0].Pid }).Count -eq 0 -and
+        $null -ne $rt -and $rt.workerPid -eq $x.Workers[0].Pid -and $rt.url) {
         [pscustomobject]@{ Helper = $x; Runtime = $rt }
       }
     } -Seconds 20
-    Save-Processes 'check6'
+    Save-Processes 'check8'
     Expect ($null -ne $back) "it is back: $(if ($null -ne $back) { Format-Helper $back.Helper } else { Format-Helper (Get-Helper) })"
     if ($null -ne $back) {
       $S.Url = [string]$back.Runtime.url
       $S.Supervisor = $back.Helper.Supervisors[0]
       $S.Worker = $back.Helper.Workers[0]
       $S.ReinstallSupervisorPid = $S.Supervisor.Pid
+      if ($HasPrint) { $S.Print = $back.Helper.Prints[0] }
     }
     Expect ((Wait-Until { Test-Page } -Seconds 15) -eq $true) "the page answers at $($S.Url)"
+    if ($HasPrint -and $null -ne $back) {
+      # the new print process's PowerShell, compiled and ready (print/worker.ts:508-509; print/windows.ts:614)
+      $newPr = $back.Helper.Prints[0]
+      $shell = Wait-Until {
+        $x = @(Get-SpoolerShells)
+        if ($x.Count -eq 1 -and $x[0].ParentPid -eq $newPr.Pid -and (Get-LogCount 'print: Windows PowerShell started for the spooler' $PrintLogFile) -ge $shellsBefore + 1) { $x[0] }
+      } -Seconds 75 -EveryMs 500
+      Expect ($null -ne $shell) "the new print process $($newPr.Pid) started its PowerShell, the only one: $(Format-Shells (Get-SpoolerShells))"
+    }
 
     # How it was stopped, read once the new supervisor has written its start: gracefully, by the page's quit
-    # (main.ts:199-212, server.ts:119-126), so the worker's 'helper: stopped' with 0 (worker.ts:240, :283),
-    # then its supervisor's line (supervisor.ts:64-66), then the new start; not the supervisor's pipe
-    # (main.ts:213-215) nor taskkill (.nsi:112-116)
+    # (main.ts:314-327, server.ts:141-149), so the worker's 'helper: stopped' with 0 (worker.ts:403, :514),
+    # then its supervisor's line (supervisor.ts:87-91), then the new start; not the supervisor's pipe
+    # (main.ts:328-330) nor taskkill (.nsi:112-116)
     $new = @(Get-LogEntries | Select-Object -Skip $before.Count)
     $stopped = Find-Index $new { param($e) $e.Message -eq 'helper: stopped' -and $null -ne $e.Data -and $e.Data.exitCode -eq 0 }
     $asked = Find-Index $new { param($e) $e.Message -eq 'supervisor: the helper was asked to stop' }
@@ -958,25 +1516,39 @@ try {
       $byPipe = Find-Index $new { param($e) $e.Message -eq 'supervisor: asked to stop' }
       Note $(if ($byPipe -ge 0) { "it stopped through the supervisor's pipe instead: the page's quit did not end it" } else { 'neither quit is in the log: the installer ended the processes itself (taskkill)' })
     }
+    if ($HasPrint) {
+      # the print process stopped on the supervisor's word, the end of its input (main.ts:185-189; print/worker.ts:516-523,
+      # :551), and --quit waited for its lock too (main.ts:296-306), before the copy and the new supervisor's start
+      $newPrint = @(Get-LogEntries $PrintLogFile | Select-Object -Skip $printBefore.Count)
+      $prStopped = Find-Index $newPrint { param($e) $e.Message -eq 'print: stopped' -and $null -ne $e.Data -and $e.Data.exitCode -eq 0 }
+      $prStarted = Find-Index $newPrint { param($e) $e.Message -eq 'print: started' }
+      $stopAt = if ($prStopped -ge 0) { $newPrint[$prStopped].Time } else { $null }
+      $supAt = if ($restarted -ge 0) { $new[$restarted].Time } else { $null }
+      Expect ($prStopped -ge 0 -and $prStarted -gt $prStopped -and $null -ne $stopAt -and $null -ne $supAt -and $stopAt -le $supAt) "the print process stopped on the supervisor's word: 'print: stopped' with 0 at $(if ($stopAt) { $stopAt.ToString('HH:mm:ss.fff') } else { '-' }), before the new 'supervisor: started' at $(if ($supAt) { $supAt.ToString('HH:mm:ss.fff') } else { '-' }), then a new 'print: started' (print.log's new lines $prStopped, $prStarted of $($newPrint.Count))"
+    }
 
     # its data stays: an install never touches %LOCALAPPDATA%\Alty Helper (.nsi:78-104; only the uninstall does, :141)
     $entries = @(Get-LogEntries)
     Expect (Test-Path -LiteralPath $DataDir) "the data folder is kept: $DataDir"
     Expect ($entries.Count -gt $before.Count -and $firstLine -ne '' -and $entries[0].Line -eq $firstLine) "the log goes on from the first install's first line ($($before.Count) lines before, $($entries.Count) now)"
+    if ($HasPrint) {
+      $printEntries = @(Get-LogEntries $PrintLogFile)
+      Expect ($printEntries.Count -gt $printBefore.Count -and $printFirstLine -ne '' -and $printEntries[0].Line -eq $printFirstLine) "print.log goes on too ($($printBefore.Count) lines before, $($printEntries.Count) now)"
+    }
     $status = Get-Status
     Expect ($null -ne $status -and $status.link.kind -eq 'unpaired' -and $null -eq $status.pairing -and $status.version -eq $ExpectedVersion) "still unpaired, version $(if ($null -ne $status) { $status.version })"
-    Expect (-not (Test-Path -LiteralPath (Join-Path $DataDir 'config.json'))) 'no config.json: nothing was ever paired or saved (worker.ts:121-124)'
+    Expect (-not (Test-Path -LiteralPath (Join-Path $DataDir 'config.json'))) 'no config.json: nothing was ever paired or saved (worker.ts:148-151)'
     Expect ((Get-RegValue $RunKey $AppId) -eq "`"$Exe`"" -and (Test-Path -LiteralPath $Shortcut)) 'the Run key and the shortcut are still there'
-    Headline "reinstalled in $took s: stopped by its own --quit, back as supervisor $(if ($S.Supervisor) { $S.Supervisor.Pid }), data kept, unpaired"
+    Headline "reinstalled in $took s: stopped by its own --quit$(if ($HasPrint) { ', the print process on the supervisor''s word' }), back as supervisor $(if ($S.Supervisor) { $S.Supervisor.Pid }), data kept, unpaired"
   }
 
   # -------------------------------------------------------------------------------------------------------
-  Invoke-Check '7' {
+  Invoke-Check '9' {
     Expect (Test-Path -LiteralPath $LogFile) "the log is there: $LogFile"
     $entries = @(Get-LogEntries)
-    Note "$($entries.Count) lines"
+    Note "helper.log: $($entries.Count) lines"
 
-    # the supervisor's start line, with where it runs (main.ts:112, platform.ts:18-27): install and reinstall
+    # the supervisor's start line, with where it runs (main.ts:134, platform.ts:18-27): install and reinstall
     $supStarts = @($entries | Where-Object { $_.Message -eq 'supervisor: started' })
     Expect ($supStarts.Count -eq 2) "two 'supervisor: started' lines, the install's and the reinstall's: $($supStarts.Count)"
     foreach ($e in $supStarts) {
@@ -996,7 +1568,7 @@ try {
       Expect ($supStarts[1].Data.pid -eq $S.ReinstallSupervisorPid) "the second names the reinstall's, $($S.ReinstallSupervisorPid)"
     }
 
-    # the worker's start lines (worker.ts:267-272): the install, check 4's restart, the reinstall
+    # the worker's start lines (worker.ts:498-503): the install, check 5's restart, the reinstall
     $wkStarts = @($entries | Where-Object { $_.Message -eq 'helper: started' })
     Expect ($wkStarts.Count -eq 3) "three 'helper: started' lines (install, restart, reinstall): $($wkStarts.Count)"
     foreach ($e in $wkStarts) {
@@ -1004,48 +1576,87 @@ try {
       Expect ($null -ne $d -and $d.version -eq $ExpectedVersion -and $d.port -eq $Port -and $d.paired -eq $false -and $d.apiUrl -eq $ApiUrl) "worker start: $($e.Line)"
     }
 
-    # no code and no secret in it (log.ts:16, :44-49; worker.ts:203 logs only the error)
+    # the print process's own log (log.ts:73-76; print/worker.ts:110-115)
+    $prints = @()
+    if ($HasPrint) {
+      Expect (Test-Path -LiteralPath $PrintLogFile) "the print process's log is there: $PrintLogFile"
+      $prints = @(Get-LogEntries $PrintLogFile)
+      Note "print.log: $($prints.Count) lines"
+      # its start lines (print/worker.ts:524-529): the install, check 6's restart, the reinstall
+      $prStarts = @($prints | Where-Object { $_.Message -eq 'print: started' })
+      Expect ($prStarts.Count -eq 3) "three 'print: started' lines (install, restart, reinstall): $($prStarts.Count)"
+      foreach ($e in $prStarts) {
+        $d = $e.Data
+        Expect ($null -ne $d -and $d.version -eq $ExpectedVersion -and $d.installed -eq $ExpectedVersion -and $d.paired -eq $false -and $d.apiUrl -eq $ApiUrl) "print start: $($e.Line)"
+      }
+      # a PowerShell compiled and ready for each print process and each of check 4's three runs (print/windows.ts:614)
+      $shellStarts = @($prints | Where-Object { $_.Message -eq 'print: Windows PowerShell started for the spooler' })
+      $shellMs = @($shellStarts | ForEach-Object { if ($null -ne $_.Data) { [string]$_.Data.ms } else { '?' } })
+      Expect ($shellStarts.Count -eq 6) "six 'print: Windows PowerShell started for the spooler' lines, three print processes' and three checks': $($shellStarts.Count), after $($shellMs -join ', ') ms"
+      # one stop, the reinstall's, on the supervisor's word (print/worker.ts:551); the ended one wrote none
+      $prStops = @($prints | Where-Object { $_.Message -eq 'print: stopped' })
+      Expect ($prStops.Count -eq 1 -and $null -ne $prStops[0].Data -and $prStops[0].Data.exitCode -eq 0) "one 'print: stopped' with 0, the reinstall's: $(if ($prStops.Count) { ($prStops | ForEach-Object { $_.Line }) -join ' / ' } else { 'none' })"
+      # check 4's own lines (print/check.ts:49-52; jobs/print.ts:216-224, :452-459)
+      $checkLines = @($prints | Where-Object { $_.Message -eq 'print: check' })
+      Expect ($checkLines.Count -eq 5) "five 'print: check' lines from check 4's three runs (one, two, two): $($checkLines.Count)"
+      $ready = @($prints | Where-Object { $_.Message -eq 'print: ready to send' })
+      $done = @($prints | Where-Object { $_.Message -eq 'print: printed' })
+      Expect ($ready.Count -eq 1 -and $done.Count -eq 1) "the print to the file, logged once ready and once printed: $(($ready + $done | ForEach-Object { $_.Line }) -join ' / ')"
+    } else {
+      Expect (-not (Test-Path -LiteralPath $PrintLogFile)) "no print.log: $ExpectedVersion has no print process"
+    }
+
+    # no code and no secret in either (log.ts:15-29, :57-62; worker.ts:363 logs only the error)
     $text = ''
-    foreach ($file in @(Get-ChildItem -LiteralPath $LogsDir -File -Filter 'helper.log*' -ErrorAction SilentlyContinue)) {
+    foreach ($file in @(Get-HelperLogFiles)) {
       $text += [string](Read-SharedText $file.FullName)
     }
     $codeFound = ($text.IndexOf($WrongCode, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
       $text.IndexOf($WrongCode.Replace('-', ''), [StringComparison]::OrdinalIgnoreCase) -ge 0)
-    Expect (-not $codeFound) "the code $WrongCode is not in the log"
+    Expect (-not $codeFound) "the code $WrongCode is not in the logs"
     $leaked = @($S.Secrets | Where-Object { $text.Contains($_) })
-    Expect ($S.Secrets.Count -gt 0 -and $leaked.Count -eq 0) "none of the $($S.Secrets.Count) page tokens and quit secrets this test saw is in the log"
+    Expect ($S.Secrets.Count -gt 0 -and $leaked.Count -eq 0) "none of the $($S.Secrets.Count) page tokens and quit secrets this test saw is in the logs"
 
-    # nothing unexpected: the warnings and errors are exactly the two this test caused
-    $expected = @{
-      'WARN|helper: pairing refused'                                     = 1   # check 3 (worker.ts:203)
-      'ERROR|supervisor: the helper stopped by itself; starting it again' = 1   # check 4 (supervisor.ts:76)
+    # nothing unexpected: the warnings and errors are exactly those this test caused
+    $expected = [ordered]@{
+      'helper.log|WARN|helper: pairing refused'                                     = 1   # check 3 (worker.ts:363)
+      'helper.log|ERROR|supervisor: the helper stopped by itself; starting it again' = $(if ($HasPrint) { 2 } else { 1 })   # checks 5 and 6 (supervisor.ts:102-106)
     }
+    if ($HasPrint) {
+      $expected['print.log|WARN|print: the printer would only keep it in its queue; nothing sent'] = 1   # check 4's missing printer (jobs/print.ts:441-450)
+    }
+    $all = @($entries | ForEach-Object { [pscustomobject]@{ File = 'helper.log'; Entry = $_ } }) + @($prints | ForEach-Object { [pscustomobject]@{ File = 'print.log'; Entry = $_ } })
     $seen = @{}
-    foreach ($e in @($entries | Where-Object { $_.Level -ne 'INFO' })) {
-      $key = "$($e.Level)|$($e.Message)"
+    foreach ($x in @($all | Where-Object { $_.Entry.Level -ne 'INFO' })) {
+      $key = "$($x.File)|$($x.Entry.Level)|$($x.Entry.Message)"
       $seen[$key] = 1 + [int]$seen[$key]
     }
     foreach ($key in $expected.Keys) {
       Expect ([int]$seen[$key] -eq $expected[$key]) "$($key.Replace('|', ' ')): $([int]$seen[$key]) (expected $($expected[$key]))"
     }
-    $unexpected = @($entries | Where-Object { $_.Level -ne 'INFO' -and -not $expected.ContainsKey("$($_.Level)|$($_.Message)") })
-    Expect ($unexpected.Count -eq 0) "no other warning or error$(if ($unexpected.Count) { ': ' + (($unexpected | ForEach-Object { $_.Line }) -join ' / ') })"
-    $fatal = @($entries | Where-Object { $_.Message -eq 'helper: stopped by an error' })
-    Expect ($fatal.Count -eq 0) "no 'helper: stopped by an error' (log.ts:141-152)"
-    $tls = @($entries | Where-Object { $_.Message -like 'tls:*' })
-    Expect ($tls.Count -eq 0) "Windows' certificate store was read: no 'tls:' warning (api.ts:22-34)"
+    $unexpected = @($all | Where-Object { $_.Entry.Level -ne 'INFO' -and -not $expected.Contains("$($_.File)|$($_.Entry.Level)|$($_.Entry.Message)") })
+    Expect ($unexpected.Count -eq 0) "no other warning or error$(if ($unexpected.Count) { ': ' + (($unexpected | ForEach-Object { "$($_.File): $($_.Entry.Line)" }) -join ' / ') })"
+    if ($HasPrint) {
+      $restartLines = @($entries | Where-Object { $_.Message -eq 'supervisor: the helper stopped by itself; starting it again' })
+      $byProcess = @($restartLines | ForEach-Object { if ($null -ne $_.Data) { [string]$_.Data.process } else { '?' } })
+      Expect (@($byProcess | Where-Object { $_ -eq 'worker' }).Count -eq 1 -and @($byProcess | Where-Object { $_ -eq 'print' }).Count -eq 1) "the two restarts are the worker's and the print process's: $($byProcess -join ', ')"
+    }
+    $fatal = @($all | Where-Object { $_.Entry.Message -eq 'helper: stopped by an error' })
+    Expect ($fatal.Count -eq 0) "no 'helper: stopped by an error' in either log (log.ts:163-179, main.ts:386-399)"
+    $tls = @($all | Where-Object { $_.Entry.Message -like 'tls:*' })
+    Expect ($tls.Count -eq 0) "Windows' certificate store was read: no 'tls:' warning (api.ts:32-44)"
 
     # into the evidence, before the uninstall takes the data folder
     $copied = @(Save-Logs)
-    Expect ($copied.Count -ge 1) "copied to the evidence: $($copied -join ', ')"
-    Headline "$($entries.Count) lines; start facts $(if ($supStarts.Count) { "node $($supStarts[0].Data.node), $($supStarts[0].Data.osVersion) $($supStarts[0].Data.osRelease)" }); no code, no secret; only the two expected warnings"
+    Expect ($copied.Count -ge $(if ($HasPrint) { 2 } else { 1 })) "copied to the evidence: $($copied -join ', ')"
+    Headline "$($entries.Count) + $($prints.Count) lines; start facts $(if ($supStarts.Count) { "node $($supStarts[0].Data.node), $($supStarts[0].Data.osVersion) $($supStarts[0].Data.osRelease)" }); no code, no secret; only the warnings and errors the test caused"
   }
 
   # everything the uninstall will take, kept first
   Save-Evidence 'before-uninstall'
 
   # -------------------------------------------------------------------------------------------------------
-  Invoke-Check '8' {
+  Invoke-Check '10' {
     # what Settings > Apps runs for a quiet uninstall (.nsi:88, :101)
     $quiet = Get-RegValue $UninstallKey 'QuietUninstallString'
     Expect ($quiet -eq "`"$Uninstaller`" /S") "the quiet uninstall command: $quiet"
@@ -1073,7 +1684,7 @@ try {
     $null = Wait-Until { if (@(Get-Leftovers).Count -eq 0) { $true } } -Seconds 30 -EveryMs 500
     $took = [math]::Round($clock.Elapsed.TotalSeconds, 1)
     $left = @(Get-Leftovers)
-    Expect ($left.Count -eq 0) "after $took s nothing is left$(if ($left.Count) { ': ' + ($left -join '; ') } else { ': no process, no program folder, no data folder, no Run key, no Apps entry, no shortcut' })"
+    Expect ($left.Count -eq 0) "after $took s nothing is left$(if ($left.Count) { ': ' + ($left -join '; ') } else { ': no process, no PowerShell of its own, no program folder, no data folder, no Run key, no Apps entry, no shortcut' })"
     $copies = @(Get-ChildItem -LiteralPath ([System.IO.Path]::GetTempPath()) -Directory -Filter '~nsu*.tmp' -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
     Note "NSIS's own uninstaller copy in %TEMP%: $(if ($copies.Count) { $copies -join ', ' } else { 'none' })"
     Headline "uninstalled in $took s; $(if ($left.Count) { 'left: ' + ($left -join '; ') } else { 'nothing left' })"
